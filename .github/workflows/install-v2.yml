@@ -1,0 +1,83 @@
+name: Install BIG IRL APP V2
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  install:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Verify uploaded ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "BIG-IRL-APP-V2.zip" ]; then
+            echo "BIG-IRL-APP-V2.zip was not found in the repository root."
+            exit 1
+          fi
+
+          unzip -t BIG-IRL-APP-V2.zip
+
+      - name: Extract V2 project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf extracted-v2
+          mkdir extracted-v2
+
+          unzip -q BIG-IRL-APP-V2.zip -d extracted-v2
+
+          if [ ! -d "extracted-v2/BIG-IRL-APP-V2" ]; then
+            echo "Expected BIG-IRL-APP-V2 folder was not found inside the ZIP."
+            find extracted-v2 -maxdepth 3 -type f -print
+            exit 1
+          fi
+
+          cp -a extracted-v2/BIG-IRL-APP-V2/. .
+
+          rm -rf extracted-v2
+          rm -f BIG-IRL-APP-V2.zip
+
+      - name: Verify installed project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f settings.gradle.kts
+          test -f build.gradle.kts
+          test -f gradle.properties
+          test -f app/build.gradle.kts
+          test -f app/src/main/AndroidManifest.xml
+          test -f app/src/main/java/uk/co/bigirl/sender/MainActivity.kt
+          test -f app/src/main/java/uk/co/bigirl/sender/StreamingService.kt
+          test -f .github/workflows/build.yml
+
+          echo "V2 project files installed successfully."
+
+      - name: Commit installed project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No project changes to commit."
+            exit 0
+          fi
+
+          git commit -m "Install BIG IRL APP V2 project"
+          git push
