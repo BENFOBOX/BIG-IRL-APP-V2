@@ -47,6 +47,11 @@ jobs:
           rm -rf extracted-v2
           rm -f BIG-IRL-APP-V2.zip
 
+          # GitHub Actions cannot create another workflow using
+          # the normal repository token. We will add build.yml
+          # manually after the project installation succeeds.
+          rm -f .github/workflows/build.yml
+
       - name: Verify installed project
         shell: bash
         run: |
@@ -59,7 +64,6 @@ jobs:
           test -f app/src/main/AndroidManifest.xml
           test -f app/src/main/java/uk/co/bigirl/sender/MainActivity.kt
           test -f app/src/main/java/uk/co/bigirl/sender/StreamingService.kt
-          test -f .github/workflows/build.yml
 
           echo "V2 project files installed successfully."
 
