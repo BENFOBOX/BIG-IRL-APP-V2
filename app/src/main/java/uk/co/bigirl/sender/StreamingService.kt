@@ -34,7 +34,9 @@ class StreamingService : Service(), ConnectChecker {
         val isReconnecting: Boolean = false,
         val bitrateKbps: Long = 0,
         val endpoint: String = "",
-        val profile: StreamProfile = StreamProfile.MAXIMUM_1080P60,
+        val profile: StreamProfile = StreamProfile.MAXIMUM_1080P60,        
+        val torchEnabled: Boolean = false,
+        
     )
 
     inner class LocalBinder : Binder() {
@@ -180,6 +182,44 @@ class StreamingService : Service(), ConnectChecker {
         activeSurface = null
     }
 
+        fun toggleTorch(): Boolean {
+        return try {
+            val cameraManager =
+                getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+            val cameraId =
+                cameraManager.cameraIdList.firstOrNull()
+
+            if (cameraId == null) {
+                updateMessage("Torch unavailable")
+                return false
+            }
+
+            val enabled = !state.torchEnabled
+
+            cameraManager.setTorchMode(
+                cameraId,
+                enabled,
+            )
+
+            state = state.copy(
+                torchEnabled = enabled,
+            )
+
+            publishState()
+
+            true
+        } catch (error: Throwable) {
+            Log.e(TAG, "Torch error", error)
+
+            updateMessage(
+                "Torch error: " +
+                    (error.message ?: error.javaClass.simpleName),
+            )
+
+            false
+        }
+        }
     fun updatePreviewSize(width: Int, height: Int) {
         if (!state.isPrepared || width <= 0 || height <= 0) return
         runCatching {
