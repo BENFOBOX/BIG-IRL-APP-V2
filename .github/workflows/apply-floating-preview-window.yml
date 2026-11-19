@@ -1,0 +1,100 @@
+name: Apply Floating Preview Window
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check patch ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f BIG-IRL-APP-V2-floating-preview-window.zip
+          unzip -t BIG-IRL-APP-V2-floating-preview-window.zip
+
+      - name: Apply floating preview patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf floating-preview-patch
+          mkdir floating-preview-patch
+
+          unzip -q \
+            BIG-IRL-APP-V2-floating-preview-window.zip \
+            -d floating-preview-patch
+
+          python3 \
+            floating-preview-patch/apply_floating_preview_patch.py
+
+          rm -rf floating-preview-patch
+          rm -f BIG-IRL-APP-V2-floating-preview-window.zip
+
+      - name: Verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MANIFEST="app/src/main/AndroidManifest.xml"
+          SERVICE="app/src/main/java/uk/co/bigirl/sender/StreamingService.kt"
+          ACTIVITY="app/src/main/java/uk/co/bigirl/sender/MainActivity.kt"
+
+          grep -F \
+            'android.permission.SYSTEM_ALERT_WINDOW' \
+            "$MANIFEST"
+
+          grep -F \
+            'showFloatingPreviewIfNeeded' \
+            "$SERVICE"
+
+          grep -F \
+            'stream.addPreviewSurface' \
+            "$SERVICE"
+
+          grep -F \
+            'LIVE  ${state.bitrateKbps} Kbps' \
+            "$SERVICE"
+
+          grep -F \
+            'service?.setAppForeground(false)' \
+            "$ACTIVITY"
+
+          if grep -Fq \
+            'STOP / KILL STREAM' \
+            "$ACTIVITY"; then
+              echo "FAIL: obsolete in-app menu remains"
+              exit 1
+          fi
+
+          echo "PASS: floating preview patch verified"
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m \
+            "Replace in-app menu with floating stream preview"
+
+          git push
