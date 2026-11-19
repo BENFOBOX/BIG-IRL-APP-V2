@@ -17,7 +17,7 @@
         android:allowBackup="false"
         android:label="BIG IRL APP V2"
         android:theme="@style/Theme.BigIrlV2"
-        android:usesCleartextTraffic="false">
+        android:usesCleartextTraffic="true">
 
         <activity
             android:name=".MainActivity"

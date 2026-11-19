@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -40,6 +41,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -51,11 +53,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     private var service by mutableStateOf<StreamingService?>(null)
@@ -124,6 +128,8 @@ private fun BigIrlV2(service: StreamingService?) {
         )
     }
     var surfaceReady by remember { mutableStateOf<SurfaceView?>(null) }
+    var streamBoxTelemetry by remember { mutableStateOf(StreamBoxTelemetry()) }
+    var phoneNetworkState by remember { mutableStateOf(readPhoneNetworkState(context)) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -155,6 +161,14 @@ private fun BigIrlV2(service: StreamingService?) {
         }
     }
 
+    LaunchedEffect(Unit) {
+        while (true) {
+            phoneNetworkState = readPhoneNetworkState(context)
+            streamBoxTelemetry = fetchStreamBoxTelemetry()
+            delay(1_000)
+        }
+    }
+
     val colours = darkColorScheme(
         primary = Color(0xFF51E1A6),
         onPrimary = Color(0xFF002116),
@@ -177,6 +191,8 @@ private fun BigIrlV2(service: StreamingService?) {
                     endpoint = endpoint,
                     profileMenuOpen = profileMenuOpen,
                     controlsOnLeft = controlsOnLeft,
+                    streamBoxTelemetry = streamBoxTelemetry,
+                    phoneNetworkState = phoneNetworkState,
                     onSurfaceReady = { surfaceReady = it },
                     onPermissionRequest = { permissionLauncher.launch(requiredPermissions()) },
                     onEndpointChange = {
@@ -203,6 +219,8 @@ private fun BigIrlV2(service: StreamingService?) {
                     endpoint = endpoint,
                     profileMenuOpen = profileMenuOpen,
                     controlsOnLeft = controlsOnLeft,
+                    streamBoxTelemetry = streamBoxTelemetry,
+                    phoneNetworkState = phoneNetworkState,
                     onSurfaceReady = { surfaceReady = it },
                     onPermissionRequest = { permissionLauncher.launch(requiredPermissions()) },
                     onEndpointChange = {
@@ -234,6 +252,8 @@ private fun LandscapeStudio(
     endpoint: String,
     profileMenuOpen: Boolean,
     controlsOnLeft: Boolean,
+    streamBoxTelemetry: StreamBoxTelemetry,
+    phoneNetworkState: PhoneNetworkState,
     onSurfaceReady: (SurfaceView?) -> Unit,
     onPermissionRequest: () -> Unit,
     onEndpointChange: (String) -> Unit,
@@ -245,6 +265,7 @@ private fun LandscapeStudio(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
+            .statusBarsPadding()
             .padding(8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -271,6 +292,9 @@ private fun LandscapeStudio(
             service = service,
             permissionsGranted = permissionsGranted,
             selectedProfile = selectedProfile,
+            streamState = streamState,
+            streamBoxTelemetry = streamBoxTelemetry,
+            phoneNetworkState = phoneNetworkState,
             onSurfaceReady = onSurfaceReady,
             onPermissionRequest = onPermissionRequest,
         )
@@ -304,6 +328,8 @@ private fun PortraitStudio(
     endpoint: String,
     profileMenuOpen: Boolean,
     controlsOnLeft: Boolean,
+    streamBoxTelemetry: StreamBoxTelemetry,
+    phoneNetworkState: PhoneNetworkState,
     onSurfaceReady: (SurfaceView?) -> Unit,
     onPermissionRequest: () -> Unit,
     onEndpointChange: (String) -> Unit,
@@ -315,14 +341,26 @@ private fun PortraitStudio(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(14.dp),
+            .statusBarsPadding()
+            .padding(horizontal = 14.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
+        ProfileSelector(
+            selectedProfile = selectedProfile,
+            profileMenuOpen = profileMenuOpen,
+            enabled = !streamState.wantsStreaming,
+            onProfileMenuChange = onProfileMenuChange,
+            onProfileSelected = onProfileSelected,
+        )
+
         PreviewPanel(
             modifier = Modifier.fillMaxWidth().aspectRatio(16f / 9f),
             service = service,
             permissionsGranted = permissionsGranted,
             selectedProfile = selectedProfile,
+            streamState = streamState,
+            streamBoxTelemetry = streamBoxTelemetry,
+            phoneNetworkState = phoneNetworkState,
             onSurfaceReady = onSurfaceReady,
             onPermissionRequest = onPermissionRequest,
         )
@@ -351,6 +389,9 @@ private fun PreviewPanel(
     service: StreamingService?,
     permissionsGranted: Boolean,
     selectedProfile: StreamProfile,
+    streamState: StreamingService.StreamState,
+    streamBoxTelemetry: StreamBoxTelemetry,
+    phoneNetworkState: PhoneNetworkState,
     onSurfaceReady: (SurfaceView?) -> Unit,
     onPermissionRequest: () -> Unit,
 ) {
@@ -385,6 +426,20 @@ private fun PreviewPanel(
                     })
                 }
             },
+        )
+
+        StreamOverlay(
+            modifier = Modifier.align(Alignment.TopStart),
+            streamState = streamState,
+            telemetry = streamBoxTelemetry,
+            network = phoneNetworkState,
+        )
+
+        TorchOverlay(
+            modifier = Modifier.align(Alignment.BottomStart),
+            torchEnabled = streamState.torchEnabled,
+            enabled = permissionsGranted && service != null && streamState.isPrepared,
+            onClick = { service?.toggleTorch() },
         )
 
         if (!permissionsGranted) {
@@ -450,29 +505,13 @@ private fun ControlPanel(
             Text(if (controlsOnLeft) "Controls: LEFT" else "Controls: RIGHT")
         }
 
-        Box {
-            OutlinedButton(
-                modifier = Modifier.fillMaxWidth(),
-                enabled = !streamState.wantsStreaming,
-                onClick = { onProfileMenuChange(true) },
-            ) {
-                Text(selectedProfile.label)
-            }
-            DropdownMenu(
-                expanded = profileMenuOpen,
-                onDismissRequest = { onProfileMenuChange(false) },
-            ) {
-                StreamProfile.entries.forEach { profile ->
-                    DropdownMenuItem(
-                        text = { Text(profile.label) },
-                        onClick = {
-                            onProfileMenuChange(false)
-                            onProfileSelected(profile)
-                        },
-                    )
-                }
-            }
-        }
+        ProfileSelector(
+            selectedProfile = selectedProfile,
+            profileMenuOpen = profileMenuOpen,
+            enabled = !streamState.wantsStreaming,
+            onProfileMenuChange = onProfileMenuChange,
+            onProfileSelected = onProfileSelected,
+        )
 
         OutlinedTextField(
             value = endpoint,
@@ -501,15 +540,100 @@ private fun ControlPanel(
             ) { Text("STOP") }
         }
 
-        Button(
-            modifier = Modifier.fillMaxWidth(),
-            enabled = permissionsGranted && service != null && streamState.isPrepared,
-            onClick = { service?.toggleTorch() },
-        ) {
-            Text(if (streamState.torchEnabled) "TORCH ON" else "TORCH OFF")
-        }
-
         Text("Active profile: ${streamState.profile.label}")
+    }
+}
+
+@Composable
+private fun ProfileSelector(
+    selectedProfile: StreamProfile,
+    profileMenuOpen: Boolean,
+    enabled: Boolean,
+    onProfileMenuChange: (Boolean) -> Unit,
+    onProfileSelected: (StreamProfile) -> Unit,
+) {
+    Box {
+        OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            enabled = enabled,
+            onClick = { onProfileMenuChange(true) },
+        ) {
+            Text(selectedProfile.label)
+        }
+        DropdownMenu(
+            expanded = profileMenuOpen,
+            onDismissRequest = { onProfileMenuChange(false) },
+        ) {
+            StreamProfile.entries.forEach { profile ->
+                DropdownMenuItem(
+                    text = { Text(profile.label) },
+                    onClick = {
+                        onProfileMenuChange(false)
+                        onProfileSelected(profile)
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun StreamOverlay(
+    modifier: Modifier,
+    streamState: StreamingService.StreamState,
+    telemetry: StreamBoxTelemetry,
+    network: PhoneNetworkState,
+) {
+    val stateLabel = when {
+        streamState.isStreaming -> "LIVE"
+        streamState.isReconnecting -> "RECONNECTING"
+        streamState.wantsStreaming -> "CONNECTING"
+        else -> "IDLE"
+    }
+    val activeBitrate = streamState.bitrateKbps
+    val wifiText = if (network.activeTransport == "wifi") "${activeBitrate} Kbps" else "Standby"
+    val simText = if (network.activeTransport == "cellular") "${activeBitrate} Kbps" else "Standby"
+    val receivedQuality = if (telemetry.width > 0 && telemetry.height > 0) {
+        "${telemetry.width}x${telemetry.height} | ${"%.1f".format(telemetry.fps)} fps"
+    } else {
+        "Waiting for StreamBox"
+    }
+
+    Column(
+        modifier = modifier
+            .padding(8.dp)
+            .background(Color(0xB3071019), RoundedCornerShape(9.dp))
+            .padding(horizontal = 9.dp, vertical = 6.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text("$stateLabel | TX ${streamState.bitrateKbps} Kbps", color = Color.White, fontWeight = FontWeight.Bold)
+        Text("${if (network.wifiAvailable) "●" else "○"} Wi-Fi | $wifiText", color = if (network.wifiAvailable) Color(0xFF51E1A6) else Color.LightGray)
+        Text("${if (network.cellularAvailable) "●" else "○"} SIM | $simText", color = if (network.cellularAvailable) Color(0xFF51E1A6) else Color.LightGray)
+        Text("RX ${telemetry.receivedKbps} Kbps | $receivedQuality", color = Color.White)
+        Text(
+            if (telemetry.online) "Nano ${"%.1f".format(telemetry.nanoTemperatureC)} C" else "Nano offline",
+            color = if (telemetry.online) Color(0xFF51E1A6) else Color(0xFFFFC857),
+        )
+    }
+}
+
+@Composable
+private fun TorchOverlay(
+    modifier: Modifier,
+    torchEnabled: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    TextButton(
+        modifier = modifier.padding(8.dp),
+        enabled = enabled,
+        onClick = onClick,
+    ) {
+        Text(
+            text = "🔦",
+            color = if (torchEnabled) Color.Yellow else Color.White,
+            style = MaterialTheme.typography.headlineMedium,
+        )
     }
 }
 

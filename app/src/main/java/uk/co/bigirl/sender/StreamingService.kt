@@ -72,7 +72,7 @@ class StreamingService : Service(), ConnectChecker {
     private fun createStream() {
         stream = GenericStream(applicationContext, this).apply {
             getGlInterface().autoHandleOrientation = true
-            getGlInterface().setAspectRatioMode(AspectRatioMode.Fill)
+            getGlInterface().setAspectRatioMode(AspectRatioMode.Adjust)
         }
     }
 
