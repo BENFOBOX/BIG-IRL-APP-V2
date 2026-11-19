@@ -47,6 +47,7 @@ class StreamingService : Service(), ConnectChecker {
         private const val TAG = "BIG_IRL_V2"
         private const val CHANNEL_ID = "big_irl_streaming"
         private const val NOTIFICATION_ID = 1001
+        const val ACTION_KILL_STREAM = "uk.co.bigirl.sender.KILL_STREAM"
 
         private val RETRY_DELAYS_MS =
             longArrayOf(0, 500, 1_000, 2_000, 5_000)
@@ -94,14 +95,14 @@ class StreamingService : Service(), ConnectChecker {
         flags: Int,
         startId: Int,
     ): Int {
-        startForeground(
-            NOTIFICATION_ID,
-            notification(state.message),
-        )
-
+        if (intent?.action == ACTION_KILL_STREAM) {
+            stopStream()
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        startForeground(NOTIFICATION_ID, notification(state.message))
         acquireWakeLock()
-
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     fun addListener(listener: Listener) {
@@ -797,6 +798,13 @@ class StreamingService : Service(), ConnectChecker {
         )
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        // Swiping the app away is an explicit emergency stop.
+        stopStream()
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         userStopping = true
 
@@ -898,6 +906,13 @@ class StreamingService : Service(), ConnectChecker {
                     PendingIntent.FLAG_IMMUTABLE,
             )
 
+        val killIntent = Intent(this, StreamingService::class.java).apply {
+            action = ACTION_KILL_STREAM
+        }
+        val killPendingIntent = PendingIntent.getService(
+            this, 1002, killIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         return NotificationCompat.Builder(
             this,
             CHANNEL_ID,
@@ -916,6 +931,7 @@ class StreamingService : Service(), ConnectChecker {
             .setContentIntent(
                 pendingIntent,
             )
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "KILL STREAM", killPendingIntent)
             .setOnlyAlertOnce(true)
             .build()
     }

@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -402,6 +403,7 @@ private fun PreviewPanel(
     onSurfaceReady: (SurfaceView?) -> Unit,
     onPermissionRequest: () -> Unit,
 ) {
+    val currentContext = LocalContext.current
     Box(
         modifier = modifier.background(Color.Black, RoundedCornerShape(12.dp)),
         contentAlignment = Alignment.Center,
@@ -452,6 +454,36 @@ private fun PreviewPanel(
             onClick = { service?.toggleTorch() },
         )
 
+        var quickMenuOpen by remember { mutableStateOf(false) }
+        Box(
+            modifier = Modifier.align(Alignment.BottomEnd).padding(7.dp),
+        ) {
+            Button(onClick = { quickMenuOpen = true }) { Text("☰") }
+            DropdownMenu(
+                expanded = quickMenuOpen,
+                onDismissRequest = { quickMenuOpen = false },
+            ) {
+                DropdownMenuItem(
+                    text = { Text("STOP / KILL STREAM") },
+                    enabled = streamState.wantsStreaming,
+                    onClick = {
+                        quickMenuOpen = false
+                        service?.stopStream()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Recordings") },
+                    onClick = {
+                        quickMenuOpen = false
+                        val intent = Intent(
+                            Intent.ACTION_VIEW,
+                            Uri.parse("http://192.168.1.27:8081/"),
+                        )
+                        currentContext.startActivity(intent)
+                    },
+                )
+            }
+        }
         if (!permissionsGranted) {
             Button(onClick = onPermissionRequest) {
                 Text("Allow camera and microphone")

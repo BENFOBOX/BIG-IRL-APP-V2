@@ -34,6 +34,6 @@
             android:name=".StreamingService"
             android:exported="false"
             android:foregroundServiceType="camera|microphone"
-            android:stopWithTask="false" />
+            android:stopWithTask="true" />
     </application>
 </manifest>
