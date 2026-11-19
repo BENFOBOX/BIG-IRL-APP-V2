@@ -33,3 +33,7 @@ Push the project to GitHub, open **Actions**, run **Build BIG IRL APP V2**, then
 ## StreamBox recordings manager
 
 Copy `streambox/install-recordings-manager.sh` to the StreamBox and run it once. It installs a boot-enabled browser manager at `http://192.168.1.27:8081` with playback, download, storage reporting and token-protected deletion.
+### Bonded receiver integration
+
+Receiver values and the native sender boundary are documented in `BONDING-PATCH-NOTES.md`. The public receiver is `145.40.153.191`, using UDP ports `10010` (Wi-Fi member) and `10011` (cellular member). The current RootEncoder single-link path remains unchanged until the JNI SRT broadcast-group sender is integrated.
+
