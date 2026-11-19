@@ -12,7 +12,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import android.hardware.camera2.CameraManager
+import com.pedro.encoder.input.sources.video.Camera2Source
 import android.util.Log
 import android.view.SurfaceView
 import androidx.core.app.NotificationCompat
@@ -127,7 +127,7 @@ class StreamingService : Service(), ConnectChecker {
             stream.startPreview(surfaceView)
 
             if (!state.wantsStreaming) {
-                updateMessage("Camera ready • ${state.profile.label}")
+                updateMessage("Camera ready â€¢ ${state.profile.label}")
             } else {
                 publishState()
             }
@@ -183,43 +183,35 @@ class StreamingService : Service(), ConnectChecker {
     }
 
         fun toggleTorch(): Boolean {
+        val cameraSource = stream.videoSource as? Camera2Source
+
+        if (cameraSource == null) {
+            updateMessage("Torch unavailable for current camera source")
+            return false
+        }
+
         return try {
-            val cameraManager =
-                getSystemService(Context.CAMERA_SERVICE) as CameraManager
-
-            val cameraId =
-                cameraManager.cameraIdList.firstOrNull()
-
-            if (cameraId == null) {
-                updateMessage("Torch unavailable")
-                return false
-            }
-
             val enabled = !state.torchEnabled
 
-            cameraManager.setTorchMode(
-                cameraId,
-                enabled,
-            )
+            if (enabled) {
+                cameraSource.enableLantern()
+            } else {
+                cameraSource.disableLantern()
+            }
 
-            state = state.copy(
-                torchEnabled = enabled,
-            )
-
+            state = state.copy(torchEnabled = enabled)
             publishState()
-
             true
         } catch (error: Throwable) {
             Log.e(TAG, "Torch error", error)
-
             updateMessage(
                 "Torch error: " +
                     (error.message ?: error.javaClass.simpleName),
             )
-
             false
         }
-        }
+    }
+
     fun updatePreviewSize(width: Int, height: Int) {
         if (!state.isPrepared || width <= 0 || height <= 0) return
         runCatching {
@@ -256,7 +248,7 @@ class StreamingService : Service(), ConnectChecker {
             val message = if (retryIndex == 0) {
                 "Connecting to StreamBox"
             } else {
-                "Reconnecting • attempt ${retryIndex + 1}"
+                "Reconnecting â€¢ attempt ${retryIndex + 1}"
             }
             state = state.copy(isStreaming = false, isReconnecting = retryIndex > 0, bitrateKbps = 0)
             updateMessage(message)
@@ -275,7 +267,7 @@ class StreamingService : Service(), ConnectChecker {
         cancelRetry()
         val delay = RETRY_DELAYS_MS[retryIndex.coerceAtMost(RETRY_DELAYS_MS.lastIndex)]
         state = state.copy(isStreaming = false, isReconnecting = true, bitrateKbps = 0)
-        updateMessage("Reconnecting in ${delay}ms • ${reason.ifBlank { "connection lost" }}")
+        updateMessage("Reconnecting in ${delay}ms â€¢ ${reason.ifBlank { "connection lost" }}")
         retryRunnable = Runnable {
             retryIndex = (retryIndex + 1).coerceAtMost(RETRY_DELAYS_MS.lastIndex)
             connectNow()
@@ -362,6 +354,12 @@ class StreamingService : Service(), ConnectChecker {
         cancelRetry()
 
         runCatching {
+            (stream.videoSource as? Camera2Source)?.disableLantern()
+        }
+
+        state = state.copy(torchEnabled = false)
+
+        runCatching {
             if (stream.isStreaming) {
                 stream.stopStream()
             }
@@ -377,27 +375,11 @@ class StreamingService : Service(), ConnectChecker {
             stream.release()
         }
 
-        runCatching {
-            val cameraManager =
-                getSystemService(Context.CAMERA_SERVICE)
-                    as CameraManager
-
-            cameraManager.cameraIdList
-                .firstOrNull()
-                ?.let {
-                    cameraManager.setTorchMode(
-                        it,
-                        false,
-                    )
-                }
-        }
-
         wakeLock?.takeIf { it.isHeld }?.release()
         wakeLock = null
 
         super.onDestroy()
     }
-
 
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
