@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.hardware.camera2.CameraManager
 import android.util.Log
 import android.view.SurfaceView
 import androidx.core.app.NotificationCompat
