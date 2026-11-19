@@ -1,0 +1,66 @@
+name: Apply V2 resilience update
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Extract update
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f BIG-IRL-APP-V2-resilience.zip
+
+          rm -rf update-project
+          mkdir update-project
+
+          unzip -q BIG-IRL-APP-V2-resilience.zip -d update-project
+
+          SOURCE="update-project/BIG-IRL-APP-V2-main"
+
+          test -f "$SOURCE/app/src/main/java/uk/co/bigirl/sender/MainActivity.kt"
+          test -f "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamingService.kt"
+          test -f "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamProfile.kt"
+
+          cp \
+            "$SOURCE/app/src/main/java/uk/co/bigirl/sender/MainActivity.kt" \
+            app/src/main/java/uk/co/bigirl/sender/MainActivity.kt
+
+          cp \
+            "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamingService.kt" \
+            app/src/main/java/uk/co/bigirl/sender/StreamingService.kt
+
+          cp \
+            "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamProfile.kt" \
+            app/src/main/java/uk/co/bigirl/sender/StreamProfile.kt
+
+          rm -rf streambox
+          cp -a "$SOURCE/streambox" .
+
+          cp "$SOURCE/README.md" README.md
+
+          rm -rf update-project
+          rm -f BIG-IRL-APP-V2-resilience.zip
+
+      - name: Commit update
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+          git commit -m "Add profiles, reconnect and StreamBox manager"
+          git push
