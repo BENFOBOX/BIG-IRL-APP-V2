@@ -62,6 +62,7 @@ class StreamingService : Service(), ConnectChecker {
     private var retryIndex = 0
     private var retryRunnable: Runnable? = null
     private var userStopping = false
+    private var previewAttachInProgress = false
 
     override fun onCreate() {
         super.onCreate()
@@ -99,6 +100,13 @@ class StreamingService : Service(), ConnectChecker {
         surfaceView: SurfaceView,
         profile: StreamProfile = state.profile,
     ): Boolean {
+        if (previewAttachInProgress) return true
+        if (activeSurface === surfaceView && stream.isOnPreview) {
+            updatePreviewSize(surfaceView.width, surfaceView.height)
+            return true
+        }
+
+        previewAttachInProgress = true
         activeSurface = surfaceView
         return try {
             if (state.isPrepared && profile != state.profile && !state.wantsStreaming) {
@@ -147,6 +155,8 @@ class StreamingService : Service(), ConnectChecker {
             Log.e(TAG, "Preview preparation failed", error)
             updateMessage("Camera error: ${error.message ?: error.javaClass.simpleName}")
             false
+        } finally {
+            previewAttachInProgress = false
         }
     }
 

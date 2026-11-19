@@ -17,6 +17,7 @@ last_probe_time = 0
 cached_width = 0
 cached_height = 0
 cached_fps = 0.0
+rate_samples = []
 
 def newest_recording():
     files = [os.path.join(RECORDING_DIR, name) for name in os.listdir(RECORDING_DIR) if name.endswith('.ts')]
@@ -48,7 +49,7 @@ def probe(path):
     return cached_width, cached_height, cached_fps
 
 def snapshot():
-    global last_path, last_size, last_time
+    global last_path, last_size, last_time, rate_samples
     now = time.time()
     path = newest_recording()
     size = os.path.getsize(path) if path and os.path.exists(path) else 0
@@ -57,6 +58,12 @@ def snapshot():
     if path == last_path and size >= last_size:
         received_kbps = int(((size - last_size) * 8) / elapsed / 1000)
     last_path, last_size, last_time = path, size, now
+    if received_kbps > 20:
+        rate_samples.append(received_kbps)
+        rate_samples = rate_samples[-5:]
+    else:
+        rate_samples = []
+    received_kbps = int(sum(rate_samples) / len(rate_samples)) if rate_samples else 0
     connected = received_kbps > 20
     width, height, fps = probe(path)
     try:

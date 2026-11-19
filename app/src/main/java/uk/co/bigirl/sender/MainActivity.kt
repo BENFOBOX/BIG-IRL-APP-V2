@@ -17,6 +17,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,7 +29,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -57,6 +60,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
@@ -157,7 +161,10 @@ private fun BigIrlV2(service: StreamingService?) {
     LaunchedEffect(service, surfaceReady, isLandscape) {
         val preview = surfaceReady
         if (service != null && preview != null && preview.holder.surface.isValid) {
-            service.prepareAndAttachPreview(preview, selectedProfile)
+            delay(120)
+            if (preview.holder.surface.isValid) {
+                service.prepareAndAttachPreview(preview, selectedProfile)
+            }
         }
     }
 
@@ -414,9 +421,7 @@ private fun PreviewPanel(
                             width: Int,
                             height: Int,
                         ) {
-                            onSurfaceReady(view)
                             service?.updatePreviewSize(width, height)
-                            service?.prepareAndAttachPreview(view, selectedProfile)
                         }
 
                         override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -428,11 +433,15 @@ private fun PreviewPanel(
             },
         )
 
-        StreamOverlay(
+        SenderOverlay(
             modifier = Modifier.align(Alignment.TopStart),
             streamState = streamState,
-            telemetry = streamBoxTelemetry,
             network = phoneNetworkState,
+        )
+
+        ReceiverOverlay(
+            modifier = Modifier.align(Alignment.TopEnd),
+            telemetry = streamBoxTelemetry,
         )
 
         TorchOverlay(
@@ -578,10 +587,9 @@ private fun ProfileSelector(
 }
 
 @Composable
-private fun StreamOverlay(
+private fun SenderOverlay(
     modifier: Modifier,
     streamState: StreamingService.StreamState,
-    telemetry: StreamBoxTelemetry,
     network: PhoneNetworkState,
 ) {
     val stateLabel = when {
@@ -591,28 +599,70 @@ private fun StreamOverlay(
         else -> "IDLE"
     }
     val activeBitrate = streamState.bitrateKbps
-    val wifiText = if (network.activeTransport == "wifi") "${activeBitrate} Kbps" else "Standby"
-    val simText = if (network.activeTransport == "cellular") "${activeBitrate} Kbps" else "Standby"
-    val receivedQuality = if (telemetry.width > 0 && telemetry.height > 0) {
-        "${telemetry.width}x${telemetry.height} | ${"%.1f".format(telemetry.fps)} fps"
+    val wifiText = if (network.activeTransport == "wifi") compactRate(activeBitrate) else "standby"
+    val simText = if (network.activeTransport == "cellular") compactRate(activeBitrate) else "standby"
+
+    Column(
+        modifier = modifier
+            .padding(5.dp)
+            .background(Color(0x99071019), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        verticalArrangement = Arrangement.spacedBy(0.dp),
+    ) {
+        Text(
+            "$stateLabel  TX ${compactRate(streamState.bitrateKbps)}",
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 9.sp,
+            lineHeight = 10.sp,
+        )
+        Text(
+            "${if (network.wifiAvailable) "●" else "○"} Wi-Fi $wifiText",
+            color = if (network.wifiAvailable) Color(0xFF51E1A6) else Color.LightGray,
+            fontSize = 8.sp,
+            lineHeight = 9.sp,
+        )
+        Text(
+            "${if (network.cellularAvailable) "●" else "○"} SIM $simText",
+            color = if (network.cellularAvailable) Color(0xFF51E1A6) else Color.LightGray,
+            fontSize = 8.sp,
+            lineHeight = 9.sp,
+        )
+    }
+}
+
+@Composable
+private fun ReceiverOverlay(
+    modifier: Modifier,
+    telemetry: StreamBoxTelemetry,
+) {
+    val quality = if (telemetry.width > 0 && telemetry.height > 0) {
+        "${telemetry.width}x${telemetry.height} ${"%.1f".format(telemetry.fps)}p"
     } else {
-        "Waiting for StreamBox"
+        "waiting"
     }
 
     Column(
         modifier = modifier
-            .padding(8.dp)
-            .background(Color(0xB3071019), RoundedCornerShape(9.dp))
-            .padding(horizontal = 9.dp, vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(2.dp),
+            .padding(5.dp)
+            .background(Color(0x99071019), RoundedCornerShape(6.dp))
+            .padding(horizontal = 6.dp, vertical = 4.dp),
+        horizontalAlignment = Alignment.End,
+        verticalArrangement = Arrangement.spacedBy(0.dp),
     ) {
-        Text("$stateLabel | TX ${streamState.bitrateKbps} Kbps", color = Color.White, fontWeight = FontWeight.Bold)
-        Text("${if (network.wifiAvailable) "●" else "○"} Wi-Fi | $wifiText", color = if (network.wifiAvailable) Color(0xFF51E1A6) else Color.LightGray)
-        Text("${if (network.cellularAvailable) "●" else "○"} SIM | $simText", color = if (network.cellularAvailable) Color(0xFF51E1A6) else Color.LightGray)
-        Text("RX ${telemetry.receivedKbps} Kbps | $receivedQuality", color = Color.White)
+        Text(
+            "RX ${compactRate(telemetry.receivedKbps)}",
+            color = Color.White,
+            fontWeight = FontWeight.Bold,
+            fontSize = 9.sp,
+            lineHeight = 10.sp,
+        )
+        Text(quality, color = Color.White, fontSize = 8.sp, lineHeight = 9.sp)
         Text(
             if (telemetry.online) "Nano ${"%.1f".format(telemetry.nanoTemperatureC)} C" else "Nano offline",
             color = if (telemetry.online) Color(0xFF51E1A6) else Color(0xFFFFC857),
+            fontSize = 8.sp,
+            lineHeight = 9.sp,
         )
     }
 }
@@ -624,16 +674,31 @@ private fun TorchOverlay(
     enabled: Boolean,
     onClick: () -> Unit,
 ) {
-    TextButton(
-        modifier = modifier.padding(8.dp),
-        enabled = enabled,
-        onClick = onClick,
+    val background = if (torchEnabled) Color(0xD9FFD54F) else Color(0x995F6368)
+    val foreground = if (torchEnabled) Color(0xFF302700) else Color.White
+
+    Box(
+        modifier = modifier
+            .padding(7.dp)
+            .size(38.dp)
+            .background(background, CircleShape)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             text = "🔦",
-            color = if (torchEnabled) Color.Yellow else Color.White,
-            style = MaterialTheme.typography.headlineMedium,
+            color = foreground,
+            fontSize = 18.sp,
+            lineHeight = 18.sp,
         )
+    }
+}
+
+private fun compactRate(kbps: Long): String {
+    return when {
+        kbps >= 1_000 -> "${"%.1f".format(kbps / 1_000.0)}M"
+        kbps > 0 -> "${kbps}K"
+        else -> "0"
     }
 }
 
