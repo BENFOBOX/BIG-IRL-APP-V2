@@ -230,7 +230,7 @@ private fun BigIrlV2(service: StreamingService?) {
                     ) { Text("STOP") }
                 }
 
-                Text("Test profile: H.264 720p30 at 3 Mbps • AAC 48 kHz stereo at 128 Kbps")
+Text("Test profile: H.264 1080p60 at 8 Mbps • AAC 48 kHz stereo at 128 Kbps")
                 Text(
                     "The stream belongs to a foreground service. Switching apps or replacing the preview surface must not end the broadcast.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
