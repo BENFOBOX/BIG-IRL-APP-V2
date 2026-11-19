@@ -58,39 +58,76 @@ class MainActivity : ComponentActivity() {
     private var service by mutableStateOf<StreamingService?>(null)
 
     private val connection = object : ServiceConnection {
-        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            service = (binder as StreamingService.LocalBinder).service()
+        override fun onServiceConnected(
+            name: ComponentName?,
+            binder: IBinder?,
+        ) {
+            service =
+                (binder as StreamingService.LocalBinder)
+                    .service()
         }
 
-        override fun onServiceDisconnected(name: ComponentName?) {
+        override fun onServiceDisconnected(
+            name: ComponentName?,
+        ) {
             service = null
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
+    override fun onCreate(
+        savedInstanceState: Bundle?,
+    ) {
         super.onCreate(savedInstanceState)
-        setContent { BigIrlV2(service) }
+
+        setContent {
+            BigIrlV2(service)
+        }
     }
 
     fun startAndBindStreamingService() {
-        val intent = Intent(this, StreamingService::class.java)
-        ContextCompat.startForegroundService(this, intent)
-        bindService(intent, connection, Context.BIND_AUTO_CREATE)
+        val intent =
+            Intent(
+                this,
+                StreamingService::class.java,
+            )
+
+        ContextCompat.startForegroundService(
+            this,
+            intent,
+        )
+
+        bindService(
+            intent,
+            connection,
+            Context.BIND_AUTO_CREATE,
+        )
     }
 
     override fun onDestroy() {
-        if (service != null) runCatching { unbindService(connection) }
+        if (service != null) {
+            runCatching {
+                unbindService(connection)
+            }
+        }
+
         super.onDestroy()
     }
 }
 
 @Composable
-private fun BigIrlV2(service: StreamingService?) {
+private fun BigIrlV2(
+    service: StreamingService?,
+) {
     val context = LocalContext.current
     val activity = context as MainActivity
-    val preferences = remember {
-        context.getSharedPreferences("big_irl_v2", Context.MODE_PRIVATE)
-    }
+
+    val preferences =
+        remember {
+            context.getSharedPreferences(
+                "big_irl_v2",
+                Context.MODE_PRIVATE,
+            )
+        }
 
     var endpoint by remember {
         mutableStateOf(
@@ -100,162 +137,333 @@ private fun BigIrlV2(service: StreamingService?) {
             ) ?: "srt://192.168.1.27:10000/live",
         )
     }
+
     var selectedProfile by remember {
-        val saved = preferences.getString("profile", StreamProfile.MAXIMUM_1080P60.name)
+        val saved =
+            preferences.getString(
+                "profile",
+                StreamProfile.MAXIMUM_1080P60.name,
+            )
+
         mutableStateOf(
-            runCatching { StreamProfile.valueOf(saved.orEmpty()) }
-                .getOrDefault(StreamProfile.MAXIMUM_1080P60),
+            runCatching {
+                StreamProfile.valueOf(
+                    saved.orEmpty(),
+                )
+            }.getOrDefault(
+                StreamProfile.MAXIMUM_1080P60,
+            ),
         )
     }
-    var profileMenuOpen by remember { mutableStateOf(false) }
-    var permissionsGranted by remember { mutableStateOf(hasRequiredPermissions(context)) }
+
+    var profileMenuOpen by remember {
+        mutableStateOf(false)
+    }
+
+    var permissionsGranted by remember {
+        mutableStateOf(
+            hasRequiredPermissions(context),
+        )
+    }
+
     var streamState by remember {
-        mutableStateOf(service?.currentState() ?: StreamingService.StreamState(profile = selectedProfile))
-    }
-    var surfaceReady by remember { mutableStateOf<SurfaceView?>(null) }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions(),
-    ) {
-        permissionsGranted = hasRequiredPermissions(context)
-        if (permissionsGranted) activity.startAndBindStreamingService()
+        mutableStateOf(
+            service?.currentState()
+                ?: StreamingService.StreamState(
+                    profile = selectedProfile,
+                ),
+        )
     }
 
-    DisposableEffect(service) {
-        val listener = object : StreamingService.Listener {
-            override fun onStreamState(state: StreamingService.StreamState) {
-                streamState = state
+    var surfaceReady by remember {
+        mutableStateOf<SurfaceView?>(null)
+    }
+
+    val permissionLauncher =
+        rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions(),
+        ) {
+            permissionsGranted =
+                hasRequiredPermissions(context)
+
+            if (permissionsGranted) {
+                activity.startAndBindStreamingService()
             }
         }
+
+    DisposableEffect(service) {
+        val listener =
+            object : StreamingService.Listener {
+                override fun onStreamState(
+                    state: StreamingService.StreamState,
+                ) {
+                    streamState = state
+                }
+            }
+
         service?.addListener(listener)
-        onDispose { service?.removeListener(listener) }
+
+        onDispose {
+            service?.removeListener(listener)
+        }
     }
 
     LaunchedEffect(permissionsGranted) {
-        if (permissionsGranted && service == null) activity.startAndBindStreamingService()
-    }
-
-    LaunchedEffect(service, surfaceReady) {
-        val preview = surfaceReady
-        if (service != null && preview != null && preview.holder.surface.isValid) {
-            service.prepareAndAttachPreview(preview, selectedProfile)
+        if (
+            permissionsGranted &&
+            service == null
+        ) {
+            activity.startAndBindStreamingService()
         }
     }
 
-    val colours = darkColorScheme(
-        primary = Color(0xFF51E1A6),
-        onPrimary = Color(0xFF002116),
-        background = Color(0xFF071019),
-        onBackground = Color.White,
-        surface = Color(0xFF101D2B),
-        onSurface = Color.White,
-        surfaceVariant = Color(0xFF17283A),
-        onSurfaceVariant = Color(0xFFD5E1ED),
-    )
+    LaunchedEffect(
+        service,
+        surfaceReady,
+    ) {
+        val preview = surfaceReady
 
-    MaterialTheme(colorScheme = colours) {
-        Surface(modifier = Modifier.fillMaxSize()) {
+        if (
+            service != null &&
+            preview != null &&
+            preview.holder.surface.isValid
+        ) {
+            service.prepareAndAttachPreview(
+                preview,
+                selectedProfile,
+            )
+        }
+    }
+
+    val colours =
+        darkColorScheme(
+            primary = Color(0xFF51E1A6),
+            onPrimary = Color(0xFF002116),
+            background = Color(0xFF071019),
+            onBackground = Color.White,
+            surface = Color(0xFF101D2B),
+            onSurface = Color.White,
+            surfaceVariant = Color(0xFF17283A),
+            onSurfaceVariant = Color(0xFFD5E1ED),
+        )
+
+    MaterialTheme(
+        colorScheme = colours,
+    ) {
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+        ) {
             Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
-                    .padding(14.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .verticalScroll(
+                            rememberScrollState(),
+                        )
+                        .padding(14.dp),
+                verticalArrangement =
+                    Arrangement.spacedBy(12.dp),
             ) {
-                Text("BIG IRL APP V2", style = MaterialTheme.typography.headlineMedium)
                 Text(
-                    "SRT contribution sender • foreground-safe alpha",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = "BIG IRL APP V2",
+                    style =
+                        MaterialTheme
+                            .typography
+                            .headlineMedium,
+                )
+
+                Text(
+                    text =
+                        "SRT contribution sender • " +
+                            "foreground-safe alpha",
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .onSurfaceVariant,
                 )
 
                 Card(
-                    colors = CardDefaults.cardColors(
-                        containerColor = when {
-                            streamState.isStreaming -> Color(0xFF123A2D)
-                            streamState.isReconnecting -> Color(0xFF3A2D12)
-                            else -> Color(0xFF101D2B)
-                        },
-                    ),
+                    colors =
+                        CardDefaults.cardColors(
+                            containerColor =
+                                when {
+                                    streamState.isStreaming ->
+                                        Color(0xFF123A2D)
+
+                                    streamState.isReconnecting ->
+                                        Color(0xFF3A2D12)
+
+                                    else ->
+                                        Color(0xFF101D2B)
+                                },
+                        ),
                 ) {
                     Column(
-                        Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                        modifier =
+                            Modifier.padding(12.dp),
+                        verticalArrangement =
+                            Arrangement.spacedBy(4.dp),
                     ) {
-                        Text(streamState.message)
                         Text(
-                            when {
-                                streamState.isStreaming -> "LIVE • ${streamState.bitrateKbps} Kbps"
-                                streamState.isReconnecting -> "RECONNECTING • 0 Kbps"
-                                else -> "IDLE • 0 Kbps"
-                            },
-                            color = MaterialTheme.colorScheme.primary,
+                            text = streamState.message,
+                        )
+
+                        Text(
+                            text =
+                                when {
+                                    streamState.isStreaming ->
+                                        "LIVE • " +
+                                            "${streamState.bitrateKbps} Kbps"
+
+                                    streamState.isReconnecting ->
+                                        "RECONNECTING • 0 Kbps"
+
+                                    else ->
+                                        "IDLE • 0 Kbps"
+                                },
+                            color =
+                                MaterialTheme
+                                    .colorScheme
+                                    .primary,
                         )
                     }
                 }
 
                 Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(16f / 9f)
-                        .background(Color.Black, RoundedCornerShape(12.dp)),
-                    contentAlignment = Alignment.Center,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .aspectRatio(16f / 9f)
+                            .background(
+                                Color.Black,
+                                RoundedCornerShape(12.dp),
+                            ),
+                    contentAlignment =
+                        Alignment.Center,
                 ) {
                     AndroidView(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier =
+                            Modifier.fillMaxSize(),
                         factory = { currentContext ->
-                            SurfaceView(currentContext).also { view ->
-                                view.holder.addCallback(object : SurfaceHolder.Callback {
-                                    override fun surfaceCreated(holder: SurfaceHolder) {
-                                        surfaceReady = view
-                                    }
+                            SurfaceView(
+                                currentContext,
+                            ).also { view ->
+                                view.holder.addCallback(
+                                    object :
+                                        SurfaceHolder.Callback {
 
-                                    override fun surfaceChanged(
-                                        holder: SurfaceHolder,
-                                        format: Int,
-                                        width: Int,
-                                        height: Int,
-                                    ) {
-                                        surfaceReady = view
-                                        service?.updatePreviewSize(width, height)
-                                        service?.prepareAndAttachPreview(view, selectedProfile)
-                                    }
+                                        override fun surfaceCreated(
+                                            holder: SurfaceHolder,
+                                        ) {
+                                            surfaceReady = view
+                                        }
 
-                                    override fun surfaceDestroyed(holder: SurfaceHolder) {
-                                        service?.detachPreview()
-                                        if (surfaceReady === view) surfaceReady = null
-                                    }
-                                })
+                                        override fun surfaceChanged(
+                                            holder: SurfaceHolder,
+                                            format: Int,
+                                            width: Int,
+                                            height: Int,
+                                        ) {
+                                            surfaceReady = view
+
+                                            service
+                                                ?.updatePreviewSize(
+                                                    width,
+                                                    height,
+                                                )
+
+                                            service
+                                                ?.prepareAndAttachPreview(
+                                                    view,
+                                                    selectedProfile,
+                                                )
+                                        }
+
+                                        override fun surfaceDestroyed(
+                                            holder: SurfaceHolder,
+                                        ) {
+                                            service
+                                                ?.detachPreview()
+
+                                            if (
+                                                surfaceReady ===
+                                                view
+                                            ) {
+                                                surfaceReady =
+                                                    null
+                                            }
+                                        }
+                                    },
+                                )
                             }
                         },
                     )
 
                     if (!permissionsGranted) {
-                        Button(onClick = { permissionLauncher.launch(requiredPermissions()) }) {
-                            Text("Allow camera and microphone")
+                        Button(
+                            onClick = {
+                                permissionLauncher.launch(
+                                    requiredPermissions(),
+                                )
+                            },
+                        ) {
+                            Text(
+                                "Allow camera and microphone",
+                            )
                         }
                     }
                 }
 
                 Box {
                     OutlinedButton(
-                        modifier = Modifier.fillMaxWidth(),
-                        enabled = !streamState.wantsStreaming,
-                        onClick = { profileMenuOpen = true },
+                        modifier =
+                            Modifier.fillMaxWidth(),
+                        enabled =
+                            !streamState.wantsStreaming,
+                        onClick = {
+                            profileMenuOpen = true
+                        },
                     ) {
-                        Text(selectedProfile.label)
+                        Text(
+                            selectedProfile.label,
+                        )
                     }
+
                     DropdownMenu(
-                        expanded = profileMenuOpen,
-                        onDismissRequest = { profileMenuOpen = false },
+                        expanded =
+                            profileMenuOpen,
+                        onDismissRequest = {
+                            profileMenuOpen = false
+                        },
                     ) {
-                        StreamProfile.entries.forEach { profile ->
+                        StreamProfile.entries.forEach {
+                                profile ->
+
                             DropdownMenuItem(
-                                text = { Text(profile.label) },
+                                text = {
+                                    Text(
+                                        profile.label,
+                                    )
+                                },
                                 onClick = {
-                                    profileMenuOpen = false
-                                    selectedProfile = profile
-                                    preferences.edit().putString("profile", profile.name).apply()
-                                    service?.selectProfile(profile)
+                                    profileMenuOpen =
+                                        false
+
+                                    selectedProfile =
+                                        profile
+
+                                    preferences
+                                        .edit()
+                                        .putString(
+                                            "profile",
+                                            profile.name,
+                                        )
+                                        .apply()
+
+                                    service
+                                        ?.selectProfile(
+                                            profile,
+                                        )
                                 },
                             )
                         }
@@ -266,52 +474,133 @@ private fun BigIrlV2(service: StreamingService?) {
                     value = endpoint,
                     onValueChange = {
                         endpoint = it
-                        preferences.edit().putString("endpoint", it).apply()
+
+                        preferences
+                            .edit()
+                            .putString(
+                                "endpoint",
+                                it,
+                            )
+                            .apply()
                     },
-                    modifier = Modifier.fillMaxWidth(),
-                    label = { Text("SRT destination") },
-                    supportingText = { Text("Required format: srt://ip:port/streamid") },
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    label = {
+                        Text("SRT destination")
+                    },
+                    supportingText = {
+                        Text(
+                            "Required format: " +
+                                "srt://ip:port/streamid",
+                        )
+                    },
                     singleLine = true,
                 )
 
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.spacedBy(10.dp),
                 ) {
                     Button(
-                        modifier = Modifier.weight(1f),
-                        enabled = permissionsGranted && service != null && streamState.isPrepared && !streamState.wantsStreaming,
-                        onClick = { service?.startSrt(endpoint) },
-                    ) { Text("START SRT") }
+                        modifier =
+                            Modifier.weight(1f),
+                        enabled =
+                            permissionsGranted &&
+                                service != null &&
+                                streamState.isPrepared &&
+                                !streamState.wantsStreaming,
+                        onClick = {
+                            service?.startSrt(endpoint)
+                        },
+                    ) {
+                        Text("START SRT")
+                    }
 
                     Button(
-                        modifier = Modifier.weight(1f),
-                        enabled = streamState.wantsStreaming,
-                        onClick = { service?.stopStream() },
-                    ) { Text("STOP") }
+                        modifier =
+                            Modifier.weight(1f),
+                        enabled =
+                            streamState.wantsStreaming,
+                        onClick = {
+                            service?.stopStream()
+                        },
+                    ) {
+                        Text("STOP")
+                    }
                 }
 
-                Text("Active profile: ${streamState.profile.label}")
+                Button(
+                    modifier =
+                        Modifier.fillMaxWidth(),
+                    enabled =
+                        permissionsGranted &&
+                            service != null &&
+                            streamState.isPrepared,
+                    onClick = {
+                        service?.toggleTorch()
+                    },
+                ) {
+                    Text(
+                        if (streamState.torchEnabled) {
+                            "TORCH ON"
+                        } else {
+                            "TORCH OFF"
+                        },
+                    )
+                }
+
                 Text(
-                    "Streaming and automatic reconnect belong to the foreground service. Preview reattachment no longer overwrites live status.",
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text =
+                        "Active profile: " +
+                            streamState.profile.label,
+                )
+
+                Text(
+                    text =
+                        "Streaming and automatic reconnect " +
+                            "belong to the foreground service. " +
+                            "Preview reattachment no longer " +
+                            "overwrites live status.",
+                    color =
+                        MaterialTheme
+                            .colorScheme
+                            .onSurfaceVariant,
                 )
             }
         }
     }
 }
 
-private fun requiredPermissions(): Array<String> = buildList {
-    add(Manifest.permission.CAMERA)
-    add(Manifest.permission.RECORD_AUDIO)
-    if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
-}.toTypedArray()
+private fun requiredPermissions():
+    Array<String> =
+    buildList {
+        add(
+            Manifest.permission.CAMERA,
+        )
 
-private fun hasRequiredPermissions(context: Context): Boolean {
+        add(
+            Manifest.permission.RECORD_AUDIO,
+        )
+
+        if (Build.VERSION.SDK_INT >= 33) {
+            add(
+                Manifest.permission.POST_NOTIFICATIONS,
+            )
+        }
+    }.toTypedArray()
+
+private fun hasRequiredPermissions(
+    context: Context,
+): Boolean {
     return arrayOf(
         Manifest.permission.CAMERA,
         Manifest.permission.RECORD_AUDIO,
     ).all {
-        ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(
+            context,
+            it,
+        ) == PackageManager.PERMISSION_GRANTED
     }
 }
