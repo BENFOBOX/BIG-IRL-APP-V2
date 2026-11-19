@@ -1,0 +1,64 @@
+name: Apply Latest Landscape Fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Apply replacement files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f BIG-IRL-APP-V2-latest-landscape-fix.zip
+
+          rm -rf latest-layout-update
+          mkdir latest-layout-update
+
+          unzip -q \
+            BIG-IRL-APP-V2-latest-landscape-fix.zip \
+            -d latest-layout-update
+
+          SOURCE="latest-layout-update/latest_layout_payload/app/src/main/java/uk/co/bigirl/sender"
+          TARGET="app/src/main/java/uk/co/bigirl/sender"
+
+          test -f "$SOURCE/MainActivity.kt"
+          test -f "$SOURCE/StreamingService.kt"
+          test -f "$SOURCE/StreamProfile.kt"
+
+          cp "$SOURCE/MainActivity.kt" "$TARGET/MainActivity.kt"
+          cp "$SOURCE/StreamingService.kt" "$TARGET/StreamingService.kt"
+          cp "$SOURCE/StreamProfile.kt" "$TARGET/StreamProfile.kt"
+
+          rm -rf latest-layout-update
+          rm -f BIG-IRL-APP-V2-latest-landscape-fix.zip
+
+      - name: Commit update
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m \
+            "Restore landscape layout and remove app heading"
+
+          git push
