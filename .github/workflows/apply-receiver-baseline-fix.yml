@@ -1,0 +1,92 @@
+name: Apply Receiver Baseline Fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check patch ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f BIG-IRL-APP-V2-receiver-baseline-fix.zip
+          unzip -t BIG-IRL-APP-V2-receiver-baseline-fix.zip
+
+      - name: Extract and apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf receiver-baseline-fix
+          mkdir receiver-baseline-fix
+
+          unzip -q \
+            BIG-IRL-APP-V2-receiver-baseline-fix.zip \
+            -d receiver-baseline-fix
+
+          python3 \
+            receiver-baseline-fix/apply_receiver_baseline_patch.py
+
+          mkdir -p docs
+
+          cp \
+            receiver-baseline-fix/QUALITY-ROADMAP.md \
+            docs/QUALITY-ROADMAP.md
+
+          rm -rf receiver-baseline-fix
+          rm -f BIG-IRL-APP-V2-receiver-baseline-fix.zip
+
+      - name: Verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SERVICE_FILE="app/src/main/java/uk/co/bigirl/sender/StreamingService.kt"
+          ACTIVITY_FILE="app/src/main/java/uk/co/bigirl/sender/MainActivity.kt"
+
+          grep -F \
+            'stream.requestKeyframe()' \
+            "$SERVICE_FILE"
+
+          grep -F \
+            'Nano live' \
+            "$ACTIVITY_FILE"
+
+          grep -F \
+            'Nano reconnecting' \
+            "$ACTIVITY_FILE"
+
+          test -f docs/QUALITY-ROADMAP.md
+
+          echo "PASS: receiver baseline fix verified"
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m \
+            "Improve receiver startup and SIM status"
+
+          git push
