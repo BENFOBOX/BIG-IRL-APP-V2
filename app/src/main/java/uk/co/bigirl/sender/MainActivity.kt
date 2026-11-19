@@ -274,7 +274,7 @@ private fun BigIrlV2(
 
                 Text(
                     text =
-                        "SRT contribution sender • " +
+                        "SRT contribution sender | " +
                             "foreground-safe alpha",
                     color =
                         MaterialTheme
@@ -312,14 +312,14 @@ private fun BigIrlV2(
                             text =
                                 when {
                                     streamState.isStreaming ->
-                                        "LIVE • " +
+                                        "LIVE | " +
                                             "${streamState.bitrateKbps} Kbps"
 
                                     streamState.isReconnecting ->
-                                        "RECONNECTING • 0 Kbps"
+                                        "RECONNECTING | 0 Kbps"
 
                                     else ->
-                                        "IDLE • 0 Kbps"
+                                        "IDLE | 0 Kbps"
                                 },
                             color =
                                 MaterialTheme

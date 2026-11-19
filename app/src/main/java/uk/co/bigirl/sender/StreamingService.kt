@@ -13,6 +13,7 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import com.pedro.encoder.input.sources.video.Camera2Source
+import com.pedro.encoder.utils.gl.AspectRatioMode
 import android.util.Log
 import android.view.SurfaceView
 import androidx.core.app.NotificationCompat
@@ -71,6 +72,7 @@ class StreamingService : Service(), ConnectChecker {
     private fun createStream() {
         stream = GenericStream(applicationContext, this).apply {
             getGlInterface().autoHandleOrientation = true
+            getGlInterface().setAspectRatioMode(AspectRatioMode.Fill)
         }
     }
 
@@ -126,8 +128,17 @@ class StreamingService : Service(), ConnectChecker {
             if (stream.isOnPreview) stream.stopPreview()
             stream.startPreview(surfaceView)
 
+            if (surfaceView.width > 0 && surfaceView.height > 0) {
+                stream.getGlInterface().setPreviewResolution(
+                    surfaceView.width,
+                    surfaceView.height,
+                )
+            }
+
+            restoreTorchIfRequested()
+
             if (!state.wantsStreaming) {
-                updateMessage("Camera ready â€¢ ${state.profile.label}")
+                updateMessage("Camera ready | ${state.profile.label}")
             } else {
                 publishState()
             }
@@ -160,11 +171,14 @@ class StreamingService : Service(), ConnectChecker {
     }
 
     private fun rebuildForProfile(profile: StreamProfile) {
+        val restoreTorch = state.torchEnabled
+
         cancelRetry()
         runCatching { if (stream.isStreaming) stream.stopStream() }
         runCatching { if (stream.isOnPreview) stream.stopPreview() }
         runCatching { stream.release() }
         createStream()
+
         state = state.copy(
             isPrepared = false,
             isStreaming = false,
@@ -172,6 +186,7 @@ class StreamingService : Service(), ConnectChecker {
             isReconnecting = false,
             bitrateKbps = 0,
             profile = profile,
+            torchEnabled = restoreTorch,
         )
     }
 
@@ -212,6 +227,21 @@ class StreamingService : Service(), ConnectChecker {
         }
     }
 
+    private fun restoreTorchIfRequested() {
+        if (!state.torchEnabled) return
+
+        runCatching {
+            (stream.videoSource as? Camera2Source)?.enableLantern()
+        }.onFailure { error ->
+            Log.w(TAG, "Could not restore torch", error)
+            state = state.copy(torchEnabled = false)
+            updateMessage(
+                "Torch restore error: " +
+                    (error.message ?: error.javaClass.simpleName),
+            )
+        }
+    }
+
     fun updatePreviewSize(width: Int, height: Int) {
         if (!state.isPrepared || width <= 0 || height <= 0) return
         runCatching {
@@ -248,7 +278,7 @@ class StreamingService : Service(), ConnectChecker {
             val message = if (retryIndex == 0) {
                 "Connecting to StreamBox"
             } else {
-                "Reconnecting â€¢ attempt ${retryIndex + 1}"
+                "Reconnecting | attempt ${retryIndex + 1}"
             }
             state = state.copy(isStreaming = false, isReconnecting = retryIndex > 0, bitrateKbps = 0)
             updateMessage(message)
@@ -267,7 +297,7 @@ class StreamingService : Service(), ConnectChecker {
         cancelRetry()
         val delay = RETRY_DELAYS_MS[retryIndex.coerceAtMost(RETRY_DELAYS_MS.lastIndex)]
         state = state.copy(isStreaming = false, isReconnecting = true, bitrateKbps = 0)
-        updateMessage("Reconnecting in ${delay}ms â€¢ ${reason.ifBlank { "connection lost" }}")
+        updateMessage("Reconnecting in ${delay}ms | ${reason.ifBlank { "connection lost" }}")
         retryRunnable = Runnable {
             retryIndex = (retryIndex + 1).coerceAtMost(RETRY_DELAYS_MS.lastIndex)
             connectNow()
