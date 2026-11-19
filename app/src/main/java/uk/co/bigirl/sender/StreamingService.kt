@@ -357,16 +357,47 @@ class StreamingService : Service(), ConnectChecker {
     override fun onAuthError() = updateMessage("Authentication failed")
     override fun onAuthSuccess() = updateMessage("Authenticated")
 
-    override fun onDestroy() {
+        override fun onDestroy() {
         userStopping = true
         cancelRetry()
-        runCatching { if (stream.isStreaming) stream.stopStream() }
-        runCatching { if (stream.isOnPreview) stream.stopPreview() }
-        runCatching { stream.release() }
+
+        runCatching {
+            if (stream.isStreaming) {
+                stream.stopStream()
+            }
+        }
+
+        runCatching {
+            if (stream.isOnPreview) {
+                stream.stopPreview()
+            }
+        }
+
+        runCatching {
+            stream.release()
+        }
+
+        runCatching {
+            val cameraManager =
+                getSystemService(Context.CAMERA_SERVICE)
+                    as CameraManager
+
+            cameraManager.cameraIdList
+                .firstOrNull()
+                ?.let {
+                    cameraManager.setTorchMode(
+                        it,
+                        false,
+                    )
+                }
+        }
+
         wakeLock?.takeIf { it.isHeld }?.release()
         wakeLock = null
+
         super.onDestroy()
     }
+
 
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
