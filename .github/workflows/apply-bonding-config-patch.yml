@@ -29,9 +29,11 @@ jobs:
           rm -rf bonding-config-patch
           mkdir bonding-config-patch
 
-          unzip -q \
+                   unzip -q \
             BIG-IRL-APP-V2-bonding-config-patch.zip \
             -d bonding-config-patch
+
+          rm -rf bonding-config-patch/.github
 
           cp -a bonding-config-patch/. .
 
