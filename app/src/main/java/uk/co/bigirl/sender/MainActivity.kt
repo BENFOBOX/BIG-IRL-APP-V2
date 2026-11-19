@@ -30,7 +30,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -85,10 +88,30 @@ class MainActivity : ComponentActivity() {
 private fun BigIrlV2(service: StreamingService?) {
     val context = LocalContext.current
     val activity = context as MainActivity
+    val preferences = remember {
+        context.getSharedPreferences("big_irl_v2", Context.MODE_PRIVATE)
+    }
 
-    var endpoint by remember { mutableStateOf("srt://192.168.1.27:10000") }
+    var endpoint by remember {
+        mutableStateOf(
+            preferences.getString(
+                "endpoint",
+                "srt://192.168.1.27:10000/live",
+            ) ?: "srt://192.168.1.27:10000/live",
+        )
+    }
+    var selectedProfile by remember {
+        val saved = preferences.getString("profile", StreamProfile.MAXIMUM_1080P60.name)
+        mutableStateOf(
+            runCatching { StreamProfile.valueOf(saved.orEmpty()) }
+                .getOrDefault(StreamProfile.MAXIMUM_1080P60),
+        )
+    }
+    var profileMenuOpen by remember { mutableStateOf(false) }
     var permissionsGranted by remember { mutableStateOf(hasRequiredPermissions(context)) }
-    var streamState by remember { mutableStateOf(service?.currentState() ?: StreamingService.StreamState()) }
+    var streamState by remember {
+        mutableStateOf(service?.currentState() ?: StreamingService.StreamState(profile = selectedProfile))
+    }
     var surfaceReady by remember { mutableStateOf<SurfaceView?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -115,7 +138,7 @@ private fun BigIrlV2(service: StreamingService?) {
     LaunchedEffect(service, surfaceReady) {
         val preview = surfaceReady
         if (service != null && preview != null && preview.holder.surface.isValid) {
-            service.prepareAndAttachPreview(preview)
+            service.prepareAndAttachPreview(preview, selectedProfile)
         }
     }
 
@@ -147,13 +170,24 @@ private fun BigIrlV2(service: StreamingService?) {
 
                 Card(
                     colors = CardDefaults.cardColors(
-                        containerColor = if (streamState.isStreaming) Color(0xFF123A2D) else Color(0xFF101D2B),
+                        containerColor = when {
+                            streamState.isStreaming -> Color(0xFF123A2D)
+                            streamState.isReconnecting -> Color(0xFF3A2D12)
+                            else -> Color(0xFF101D2B)
+                        },
                     ),
                 ) {
-                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Column(
+                        Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
                         Text(streamState.message)
                         Text(
-                            "${if (streamState.isStreaming) "LIVE" else "IDLE"} • ${streamState.bitrateKbps} Kbps",
+                            when {
+                                streamState.isStreaming -> "LIVE • ${streamState.bitrateKbps} Kbps"
+                                streamState.isReconnecting -> "RECONNECTING • 0 Kbps"
+                                else -> "IDLE • 0 Kbps"
+                            },
                             color = MaterialTheme.colorScheme.primary,
                         )
                     }
@@ -183,7 +217,7 @@ private fun BigIrlV2(service: StreamingService?) {
                                     ) {
                                         surfaceReady = view
                                         service?.updatePreviewSize(width, height)
-                                        service?.prepareAndAttachPreview(view)
+                                        service?.prepareAndAttachPreview(view, selectedProfile)
                                     }
 
                                     override fun surfaceDestroyed(holder: SurfaceHolder) {
@@ -196,20 +230,47 @@ private fun BigIrlV2(service: StreamingService?) {
                     )
 
                     if (!permissionsGranted) {
-                        Button(onClick = {
-                            permissionLauncher.launch(requiredPermissions())
-                        }) {
+                        Button(onClick = { permissionLauncher.launch(requiredPermissions()) }) {
                             Text("Allow camera and microphone")
+                        }
+                    }
+                }
+
+                Box {
+                    OutlinedButton(
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !streamState.wantsStreaming,
+                        onClick = { profileMenuOpen = true },
+                    ) {
+                        Text(selectedProfile.label)
+                    }
+                    DropdownMenu(
+                        expanded = profileMenuOpen,
+                        onDismissRequest = { profileMenuOpen = false },
+                    ) {
+                        StreamProfile.entries.forEach { profile ->
+                            DropdownMenuItem(
+                                text = { Text(profile.label) },
+                                onClick = {
+                                    profileMenuOpen = false
+                                    selectedProfile = profile
+                                    preferences.edit().putString("profile", profile.name).apply()
+                                    service?.selectProfile(profile)
+                                },
+                            )
                         }
                     }
                 }
 
                 OutlinedTextField(
                     value = endpoint,
-                    onValueChange = { endpoint = it },
+                    onValueChange = {
+                        endpoint = it
+                        preferences.edit().putString("endpoint", it).apply()
+                    },
                     modifier = Modifier.fillMaxWidth(),
                     label = { Text("SRT destination") },
-                    supportingText = { Text("StreamBox LAN test: srt://192.168.1.27:10000") },
+                    supportingText = { Text("Required format: srt://ip:port/streamid") },
                     singleLine = true,
                 )
 
@@ -219,20 +280,20 @@ private fun BigIrlV2(service: StreamingService?) {
                 ) {
                     Button(
                         modifier = Modifier.weight(1f),
-                        enabled = permissionsGranted && service != null && streamState.isPrepared && !streamState.isStreaming,
+                        enabled = permissionsGranted && service != null && streamState.isPrepared && !streamState.wantsStreaming,
                         onClick = { service?.startSrt(endpoint) },
                     ) { Text("START SRT") }
 
                     Button(
                         modifier = Modifier.weight(1f),
-                        enabled = streamState.isStreaming,
+                        enabled = streamState.wantsStreaming,
                         onClick = { service?.stopStream() },
                     ) { Text("STOP") }
                 }
 
-Text("Test profile: H.264 1080p60 at 8 Mbps • AAC 48 kHz stereo at 128 Kbps")
+                Text("Active profile: ${streamState.profile.label}")
                 Text(
-                    "The stream belongs to a foreground service. Switching apps or replacing the preview surface must not end the broadcast.",
+                    "Streaming and automatic reconnect belong to the foreground service. Preview reattachment no longer overwrites live status.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

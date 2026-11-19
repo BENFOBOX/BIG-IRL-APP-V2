@@ -8,8 +8,8 @@ import android.content.Context
 import android.content.Intent
 import android.os.Binder
 import android.os.Build
-import android.os.IBinder
 import android.os.Handler
+import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
@@ -29,8 +29,11 @@ class StreamingService : Service(), ConnectChecker {
         val message: String = "Ready",
         val isPrepared: Boolean = false,
         val isStreaming: Boolean = false,
+        val wantsStreaming: Boolean = false,
+        val isReconnecting: Boolean = false,
         val bitrateKbps: Long = 0,
         val endpoint: String = "",
+        val profile: StreamProfile = StreamProfile.MAXIMUM_1080P60,
     )
 
     inner class LocalBinder : Binder() {
@@ -41,6 +44,7 @@ class StreamingService : Service(), ConnectChecker {
         private const val TAG = "BIG_IRL_V2"
         private const val CHANNEL_ID = "big_irl_streaming"
         private const val NOTIFICATION_ID = 1001
+        private val RETRY_DELAYS_MS = longArrayOf(0, 500, 1_000, 2_000, 5_000)
     }
 
     private val binder = LocalBinder()
@@ -50,10 +54,18 @@ class StreamingService : Service(), ConnectChecker {
     private lateinit var stream: GenericStream
     private var state = StreamState()
     private var wakeLock: PowerManager.WakeLock? = null
+    private var activeSurface: SurfaceView? = null
+    private var retryIndex = 0
+    private var retryRunnable: Runnable? = null
+    private var userStopping = false
 
     override fun onCreate() {
         super.onCreate()
+        createStream()
         createNotificationChannel()
+    }
+
+    private fun createStream() {
         stream = GenericStream(applicationContext, this).apply {
             getGlInterface().autoHandleOrientation = true
         }
@@ -80,11 +92,16 @@ class StreamingService : Service(), ConnectChecker {
 
     fun prepareAndAttachPreview(
         surfaceView: SurfaceView,
-        profile: StreamProfile = StreamProfile(),
+        profile: StreamProfile = state.profile,
     ): Boolean {
+        activeSurface = surfaceView
         return try {
+            if (state.isPrepared && profile != state.profile && !state.wantsStreaming) {
+                rebuildForProfile(profile)
+            }
+
             if (!state.isPrepared) {
-                update("Preparing camera and microphone")
+                updateMessage("Preparing ${profile.label}")
                 val videoReady = stream.prepareVideo(
                     profile.width,
                     profile.height,
@@ -97,27 +114,69 @@ class StreamingService : Service(), ConnectChecker {
                     profile.audioBitrate,
                 )
                 if (!videoReady || !audioReady) {
-                    update("Encoder preparation failed")
+                    updateMessage("Encoder preparation failed")
                     return false
                 }
-                state = state.copy(isPrepared = true)
+                state = state.copy(isPrepared = true, profile = profile)
             }
 
             if (stream.isOnPreview) stream.stopPreview()
             stream.startPreview(surfaceView)
-            update("Camera ready")
+
+            if (!state.wantsStreaming) {
+                updateMessage("Camera ready • ${state.profile.label}")
+            } else {
+                publishState()
+            }
             true
         } catch (error: Throwable) {
             Log.e(TAG, "Preview preparation failed", error)
-            update("Camera error: ${error.message ?: error.javaClass.simpleName}")
+            updateMessage("Camera error: ${error.message ?: error.javaClass.simpleName}")
             false
         }
+    }
+
+    fun selectProfile(profile: StreamProfile): Boolean {
+        if (state.wantsStreaming) {
+            updateMessage("Stop streaming before changing profile")
+            return false
+        }
+        if (profile == state.profile && state.isPrepared) return true
+        return try {
+            rebuildForProfile(profile)
+            activeSurface?.let { prepareAndAttachPreview(it, profile) } ?: run {
+                state = state.copy(profile = profile)
+                publishState()
+                true
+            }
+        } catch (error: Throwable) {
+            Log.e(TAG, "Profile change failed", error)
+            updateMessage("Profile error: ${error.message ?: error.javaClass.simpleName}")
+            false
+        }
+    }
+
+    private fun rebuildForProfile(profile: StreamProfile) {
+        cancelRetry()
+        runCatching { if (stream.isStreaming) stream.stopStream() }
+        runCatching { if (stream.isOnPreview) stream.stopPreview() }
+        runCatching { stream.release() }
+        createStream()
+        state = state.copy(
+            isPrepared = false,
+            isStreaming = false,
+            wantsStreaming = false,
+            isReconnecting = false,
+            bitrateKbps = 0,
+            profile = profile,
+        )
     }
 
     fun detachPreview() {
         runCatching {
             if (stream.isOnPreview) stream.stopPreview()
         }.onFailure { Log.w(TAG, "Could not detach preview", it) }
+        activeSurface = null
     }
 
     fun updatePreviewSize(width: Int, height: Int) {
@@ -129,69 +188,111 @@ class StreamingService : Service(), ConnectChecker {
 
     fun startSrt(endpoint: String): Boolean {
         val clean = endpoint.trim()
-        if (!clean.startsWith("srt://", ignoreCase = true)) {
-            update("SRT endpoint must begin srt://")
+        if (!clean.matches(Regex("^srt://[^/:]+:\\d+/.+"))) {
+            updateMessage("Use srt://ip:port/streamid")
             return false
         }
         if (!state.isPrepared) {
-            update("Start camera preview first")
+            updateMessage("Start camera preview first")
             return false
         }
-        if (stream.isStreaming) return true
+        userStopping = false
+        retryIndex = 0
+        state = state.copy(
+            endpoint = clean,
+            wantsStreaming = true,
+            isReconnecting = false,
+            bitrateKbps = 0,
+        )
+        return connectNow()
+    }
 
+    private fun connectNow(): Boolean {
+        if (!state.wantsStreaming || state.endpoint.isBlank()) return false
+        cancelRetry()
         return try {
-            state = state.copy(endpoint = clean)
-            update("Connecting to $clean")
-            Log.i(TAG, "Starting SRT: $clean")
-            stream.startStream(clean)
+            if (stream.isStreaming) stream.stopStream()
+            val message = if (retryIndex == 0) {
+                "Connecting to StreamBox"
+            } else {
+                "Reconnecting • attempt ${retryIndex + 1}"
+            }
+            state = state.copy(isStreaming = false, isReconnecting = retryIndex > 0, bitrateKbps = 0)
+            updateMessage(message)
+            Log.i(TAG, "Starting SRT: ${state.endpoint}")
+            stream.startStream(state.endpoint)
             true
         } catch (error: Throwable) {
             Log.e(TAG, "SRT start failed", error)
-            update("SRT start error: ${error.message ?: error.javaClass.simpleName}")
+            scheduleReconnect(error.message ?: error.javaClass.simpleName)
             false
         }
     }
 
+    private fun scheduleReconnect(reason: String) {
+        if (!state.wantsStreaming || userStopping) return
+        cancelRetry()
+        val delay = RETRY_DELAYS_MS[retryIndex.coerceAtMost(RETRY_DELAYS_MS.lastIndex)]
+        state = state.copy(isStreaming = false, isReconnecting = true, bitrateKbps = 0)
+        updateMessage("Reconnecting in ${delay}ms • ${reason.ifBlank { "connection lost" }}")
+        retryRunnable = Runnable {
+            retryIndex = (retryIndex + 1).coerceAtMost(RETRY_DELAYS_MS.lastIndex)
+            connectNow()
+        }.also { mainHandler.postDelayed(it, delay) }
+    }
+
+    private fun cancelRetry() {
+        retryRunnable?.let { mainHandler.removeCallbacks(it) }
+        retryRunnable = null
+    }
+
     fun stopStream() {
+        userStopping = true
+        cancelRetry()
+        state = state.copy(wantsStreaming = false, isReconnecting = false, bitrateKbps = 0)
         runCatching {
             if (stream.isStreaming) stream.stopStream()
         }.onFailure { Log.w(TAG, "Stop stream failed", it) }
-        state = state.copy(isStreaming = false, bitrateKbps = 0)
-        update("Stream stopped")
+        state = state.copy(isStreaming = false)
+        updateMessage("Stream stopped")
     }
 
-    private fun update(message: String) {
-        state = state.copy(
-            message = message,
-            isStreaming = runCatching { stream.isStreaming }.getOrDefault(state.isStreaming),
-        )
+    private fun updateMessage(message: String) {
+        state = state.copy(message = message)
         publishState()
-        val manager = getSystemService(NotificationManager::class.java)
-        manager.notify(NOTIFICATION_ID, notification(message))
+        getSystemService(NotificationManager::class.java)
+            .notify(NOTIFICATION_ID, notification(message))
     }
 
     override fun onConnectionStarted(url: String) {
         Log.i(TAG, "Connection started: $url")
-        update("SRT handshake started")
+        if (state.wantsStreaming) updateMessage("SRT handshake started")
     }
 
     override fun onConnectionSuccess() {
         Log.i(TAG, "SRT connected")
-        state = state.copy(isStreaming = true)
-        update("Live over SRT")
+        retryIndex = 0
+        state = state.copy(isStreaming = true, isReconnecting = false)
+        updateMessage("Live over SRT")
     }
 
     override fun onConnectionFailed(reason: String) {
-        val detail = reason.ifBlank { "RootEncoder returned no reason" }
+        val detail = reason.ifBlank { "connection failed" }
         Log.e(TAG, "SRT connection failed: $detail")
         state = state.copy(isStreaming = false, bitrateKbps = 0)
-        update("SRT failed: $detail")
+        if (state.wantsStreaming && !userStopping) {
+            scheduleReconnect(detail)
+        } else {
+            updateMessage("SRT failed: $detail")
+        }
     }
 
     override fun onNewBitrate(bitrate: Long) {
+        if (!state.wantsStreaming) return
         state = state.copy(
             message = "Sending ${bitrate / 1000} Kbps",
             isStreaming = true,
+            isReconnecting = false,
             bitrateKbps = bitrate / 1000,
         )
         publishState()
@@ -205,13 +306,19 @@ class StreamingService : Service(), ConnectChecker {
     override fun onDisconnect() {
         Log.w(TAG, "SRT disconnected")
         state = state.copy(isStreaming = false, bitrateKbps = 0)
-        update("Disconnected")
+        if (state.wantsStreaming && !userStopping) {
+            scheduleReconnect("disconnected")
+        } else {
+            updateMessage("Disconnected")
+        }
     }
 
-    override fun onAuthError() = update("Authentication failed")
-    override fun onAuthSuccess() = update("Authenticated")
+    override fun onAuthError() = updateMessage("Authentication failed")
+    override fun onAuthSuccess() = updateMessage("Authenticated")
 
     override fun onDestroy() {
+        userStopping = true
+        cancelRetry()
         runCatching { if (stream.isStreaming) stream.stopStream() }
         runCatching { if (stream.isOnPreview) stream.stopPreview() }
         runCatching { stream.release() }
@@ -255,7 +362,7 @@ class StreamingService : Service(), ConnectChecker {
             .setSmallIcon(android.R.drawable.presence_video_online)
             .setContentTitle("BIG IRL APP V2")
             .setContentText(message)
-            .setOngoing(state.isStreaming)
+            .setOngoing(state.wantsStreaming)
             .setContentIntent(pendingIntent)
             .setOnlyAlertOnce(true)
             .build()

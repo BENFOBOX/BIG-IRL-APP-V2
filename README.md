@@ -21,3 +21,15 @@ Binary MPEG-TS data may appear in the terminal after connection. For a cleaner l
 ## Build
 
 Push the project to GitHub, open **Actions**, run **Build BIG IRL APP V2**, then download the `BIG-IRL-APP-V2-debug-apk` artifact.
+
+## V2 resilience update
+
+- Saved SRT endpoint with the correct `/live` stream ID.
+- Saved quality profile selector: 720p30, 720p60, 1080p30, 1080p60.
+- Automatic SRT reconnect with 0, 0.5, 1, 2 and 5 second backoff.
+- Correct IDLE, RECONNECTING and LIVE states.
+- Preview reattachment no longer overwrites live bitrate status.
+
+## StreamBox recordings manager
+
+Copy `streambox/install-recordings-manager.sh` to the StreamBox and run it once. It installs a boot-enabled browser manager at `http://192.168.1.27:8081` with playback, download, storage reporting and token-protected deletion.
