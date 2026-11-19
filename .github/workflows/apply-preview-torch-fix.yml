@@ -1,0 +1,73 @@
+name: Apply Preview and Torch Fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Apply replacement files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f BIG-IRL-APP-V2-preview-torch-fix.zip
+
+          rm -rf preview-torch-update
+          mkdir preview-torch-update
+
+          unzip -q \
+            BIG-IRL-APP-V2-preview-torch-fix.zip \
+            -d preview-torch-update
+
+          SOURCE="preview-torch-update/v2_fix_payload/app/src/main/java/uk/co/bigirl/sender"
+          TARGET="app/src/main/java/uk/co/bigirl/sender"
+
+          test -f "$SOURCE/StreamingService.kt"
+          test -f "$SOURCE/MainActivity.kt"
+          test -f "$SOURCE/StreamProfile.kt"
+
+          cp \
+            "$SOURCE/StreamingService.kt" \
+            "$TARGET/StreamingService.kt"
+
+          cp \
+            "$SOURCE/MainActivity.kt" \
+            "$TARGET/MainActivity.kt"
+
+          cp \
+            "$SOURCE/StreamProfile.kt" \
+            "$TARGET/StreamProfile.kt"
+
+          rm -f .github/workflows/add-torch.yml
+          rm -rf preview-torch-update
+          rm -f BIG-IRL-APP-V2-preview-torch-fix.zip
+
+      - name: Commit update
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit \
+            -m "Fix preview layout and restore torch state"
+
+          git push
