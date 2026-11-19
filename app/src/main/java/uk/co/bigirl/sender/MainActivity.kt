@@ -262,6 +262,7 @@ private fun LandscapeStudio(
                 onProfileMenuChange = onProfileMenuChange,
                 onProfileSelected = onProfileSelected,
                 onControlsSideChange = onControlsSideChange,
+                scrollable = true,
             )
         }
 
@@ -288,6 +289,7 @@ private fun LandscapeStudio(
                 onProfileMenuChange = onProfileMenuChange,
                 onProfileSelected = onProfileSelected,
                 onControlsSideChange = onControlsSideChange,
+                scrollable = true,
             )
         }
     }
@@ -338,6 +340,7 @@ private fun PortraitStudio(
             onProfileMenuChange = onProfileMenuChange,
             onProfileSelected = onProfileSelected,
             onControlsSideChange = onControlsSideChange,
+            scrollable = false,
         )
     }
 }
@@ -406,9 +409,16 @@ private fun ControlPanel(
     onProfileMenuChange: (Boolean) -> Unit,
     onProfileSelected: (StreamProfile) -> Unit,
     onControlsSideChange: (Boolean) -> Unit,
+    scrollable: Boolean,
 ) {
+    val panelModifier = if (scrollable) {
+        modifier.verticalScroll(rememberScrollState())
+    } else {
+        modifier
+    }
+
     Column(
-        modifier = modifier.verticalScroll(rememberScrollState()),
+        modifier = panelModifier,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Card(
