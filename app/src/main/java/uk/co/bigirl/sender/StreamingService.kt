@@ -684,21 +684,22 @@ class StreamingService : Service(), ConnectChecker {
     }
 
     override fun onConnectionSuccess() {
-        Log.i(
-            TAG,
-            "SRT connected",
-        )
-
+        Log.i(TAG, "SRT connected")
         retryIndex = 0
+        state = state.copy(isStreaming = true, isReconnecting = false)
+        updateMessage("Live over SRT")
 
-        state = state.copy(
-            isStreaming = true,
-            isReconnecting = false,
-        )
+        // Give the receiver a fresh decoder entry point as soon as SRT is established.
+        // RootEncoder prepends the current codec configuration when requesting a keyframe.
+        runCatching { stream.requestKeyframe() }
+            .onFailure { Log.w(TAG, "Immediate keyframe request failed", it) }
 
-        updateMessage(
-            "Live over SRT",
-        )
+        mainHandler.postDelayed({
+            if (state.wantsStreaming && stream.isStreaming) {
+                runCatching { stream.requestKeyframe() }
+                    .onFailure { Log.w(TAG, "Follow-up keyframe request failed", it) }
+            }
+        }, 750L)
     }
 
     override fun onConnectionFailed(

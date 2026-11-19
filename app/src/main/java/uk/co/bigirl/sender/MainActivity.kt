@@ -442,6 +442,7 @@ private fun PreviewPanel(
         ReceiverOverlay(
             modifier = Modifier.align(Alignment.TopEnd),
             telemetry = streamBoxTelemetry,
+            streamState = streamState,
         )
 
         TorchOverlay(
@@ -635,6 +636,7 @@ private fun SenderOverlay(
 private fun ReceiverOverlay(
     modifier: Modifier,
     telemetry: StreamBoxTelemetry,
+    streamState: StreamingService.StreamState,
 ) {
     val quality = if (telemetry.width > 0 && telemetry.height > 0) {
         "${telemetry.width}x${telemetry.height} ${"%.1f".format(telemetry.fps)}p"
@@ -658,9 +660,16 @@ private fun ReceiverOverlay(
             lineHeight = 10.sp,
         )
         Text(quality, color = Color.White, fontSize = 8.sp, lineHeight = 9.sp)
+        val nanoConnected = telemetry.online || streamState.isStreaming
+        val nanoStatus = when {
+            telemetry.online -> "Nano ${"%.1f".format(telemetry.nanoTemperatureC)} C"
+            streamState.isStreaming -> "Nano live"
+            streamState.isReconnecting -> "Nano reconnecting"
+            else -> "Nano offline"
+        }
         Text(
-            if (telemetry.online) "Nano ${"%.1f".format(telemetry.nanoTemperatureC)} C" else "Nano offline",
-            color = if (telemetry.online) Color(0xFF51E1A6) else Color(0xFFFFC857),
+            nanoStatus,
+            color = if (nanoConnected) Color(0xFF51E1A6) else Color(0xFFFFC857),
             fontSize = 8.sp,
             lineHeight = 9.sp,
         )
