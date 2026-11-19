@@ -1,0 +1,91 @@
+name: Apply Super Overlay Patch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Apply super patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f \
+            BIG-IRL-APP-V2-super-overlay-telemetry-patch.zip
+
+          rm -rf super-update
+          mkdir super-update
+
+          unzip -q \
+            BIG-IRL-APP-V2-super-overlay-telemetry-patch.zip \
+            -d super-update
+
+          SOURCE="super-update/superpatch_payload"
+          KOTLIN_TARGET="app/src/main/java/uk/co/bigirl/sender"
+
+          test -f "$SOURCE/app/src/main/java/uk/co/bigirl/sender/MainActivity.kt"
+          test -f "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamingService.kt"
+          test -f "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamProfile.kt"
+          test -f "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamBoxTelemetry.kt"
+          test -f "$SOURCE/app/src/main/AndroidManifest.xml"
+          test -f "$SOURCE/streambox/install-telemetry-api.sh"
+
+          cp \
+            "$SOURCE/app/src/main/java/uk/co/bigirl/sender/MainActivity.kt" \
+            "$KOTLIN_TARGET/MainActivity.kt"
+
+          cp \
+            "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamingService.kt" \
+            "$KOTLIN_TARGET/StreamingService.kt"
+
+          cp \
+            "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamProfile.kt" \
+            "$KOTLIN_TARGET/StreamProfile.kt"
+
+          cp \
+            "$SOURCE/app/src/main/java/uk/co/bigirl/sender/StreamBoxTelemetry.kt" \
+            "$KOTLIN_TARGET/StreamBoxTelemetry.kt"
+
+          cp \
+            "$SOURCE/app/src/main/AndroidManifest.xml" \
+            app/src/main/AndroidManifest.xml
+
+          mkdir -p streambox
+
+          cp \
+            "$SOURCE/streambox/install-telemetry-api.sh" \
+            streambox/install-telemetry-api.sh
+
+          rm -rf super-update
+          rm -f \
+            BIG-IRL-APP-V2-super-overlay-telemetry-patch.zip
+
+      - name: Commit super patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m \
+            "Add preview overlays and StreamBox telemetry"
+
+          git push
