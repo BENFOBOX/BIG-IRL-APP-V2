@@ -11,6 +11,7 @@ import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import android.provider.Settings
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.ComponentActivity
@@ -71,7 +72,7 @@ class MainActivity : ComponentActivity() {
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-            service = (binder as StreamingService.LocalBinder).service()
+            service = (binder as StreamingService.LocalBinder).service().also { it.setAppForeground(true) }
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -81,7 +82,25 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:$packageName"),
+                ),
+            )
+        }
         setContent { BigIrlV2(service) }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        service?.setAppForeground(true)
+    }
+
+    override fun onStop() {
+        service?.setAppForeground(false)
+        super.onStop()
     }
 
     fun startAndBindStreamingService() {
@@ -454,36 +473,6 @@ private fun PreviewPanel(
             onClick = { service?.toggleTorch() },
         )
 
-        var quickMenuOpen by remember { mutableStateOf(false) }
-        Box(
-            modifier = Modifier.align(Alignment.BottomEnd).padding(7.dp),
-        ) {
-            Button(onClick = { quickMenuOpen = true }) { Text("☰") }
-            DropdownMenu(
-                expanded = quickMenuOpen,
-                onDismissRequest = { quickMenuOpen = false },
-            ) {
-                DropdownMenuItem(
-                    text = { Text("STOP / KILL STREAM") },
-                    enabled = streamState.wantsStreaming,
-                    onClick = {
-                        quickMenuOpen = false
-                        service?.stopStream()
-                    },
-                )
-                DropdownMenuItem(
-                    text = { Text("Recordings") },
-                    onClick = {
-                        quickMenuOpen = false
-                        val intent = Intent(
-                            Intent.ACTION_VIEW,
-                            Uri.parse("http://192.168.1.27:8081/"),
-                        )
-                        currentContext.startActivity(intent)
-                    },
-                )
-            }
-        }
         if (!permissionsGranted) {
             Button(onClick = onPermissionRequest) {
                 Text("Allow camera and microphone")
