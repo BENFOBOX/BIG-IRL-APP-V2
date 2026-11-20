@@ -1,0 +1,100 @@
+name: Apply Floating Preview Compile Cellular Fix
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check patch ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f \
+            BIG-IRL-APP-V2-floating-preview-compile-cellular-fix.zip
+
+          unzip -t \
+            BIG-IRL-APP-V2-floating-preview-compile-cellular-fix.zip
+
+      - name: Apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf floating-compile-cellular-fix
+          mkdir floating-compile-cellular-fix
+
+          unzip -q \
+            BIG-IRL-APP-V2-floating-preview-compile-cellular-fix.zip \
+            -d floating-compile-cellular-fix
+
+          python3 \
+            floating-compile-cellular-fix/apply_floating_compile_cellular_patch.py
+
+          rm -rf floating-compile-cellular-fix
+
+          rm -f \
+            BIG-IRL-APP-V2-floating-preview-compile-cellular-fix.zip
+
+      - name: Verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MANIFEST="app/src/main/AndroidManifest.xml"
+          SERVICE="app/src/main/java/uk/co/bigirl/sender/StreamingService.kt"
+
+          grep -F \
+            'android.permission.CHANGE_NETWORK_STATE' \
+            "$MANIFEST"
+
+          grep -F \
+            'holdCellularWhileStreaming' \
+            "$SERVICE"
+
+          grep -F \
+            'releaseCellularHold' \
+            "$SERVICE"
+
+          grep -F \
+            'TRANSPORT_CELLULAR' \
+            "$SERVICE"
+
+          if grep -Fq \
+            'stream.removePreviewSurface' \
+            "$SERVICE"; then
+              echo "FAIL: unsupported removePreviewSurface call remains"
+              exit 1
+          fi
+
+          echo "PASS: floating preview compile and cellular fix verified"
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m \
+            "Fix floating preview and request cellular while streaming"
+
+          git push
