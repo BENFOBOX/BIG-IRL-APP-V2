@@ -91,6 +91,22 @@ class StreamingService : Service(), ConnectChecker {
     private var floatingNano: TextView? = null
     private var appForeground = true
     private val showFloatingRunnable = Runnable { showFloatingPreviewIfNeeded() }
+    private val connectivityManager by lazy {
+        getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+    }
+    private var cellularNetwork: android.net.Network? = null
+    private var cellularRequestActive = false
+    private val cellularCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) {
+            cellularNetwork = network
+            updateFloatingOverlay()
+        }
+
+        override fun onLost(network: android.net.Network) {
+            if (cellularNetwork == network) cellularNetwork = null
+            updateFloatingOverlay()
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -141,6 +157,25 @@ class StreamingService : Service(), ConnectChecker {
         }
     }
 
+    private fun holdCellularWhileStreaming() {
+        if (cellularRequestActive) return
+        val request = android.net.NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+            .build()
+        runCatching {
+            connectivityManager.requestNetwork(request, cellularCallback)
+            cellularRequestActive = true
+        }.onFailure { Log.w(TAG, "Could not request cellular network", it) }
+    }
+
+    private fun releaseCellularHold() {
+        if (!cellularRequestActive) return
+        runCatching { connectivityManager.unregisterNetworkCallback(cellularCallback) }
+        cellularRequestActive = false
+        cellularNetwork = null
+    }
+
     private fun streamStatusLabel(): String = when {
         state.isStreaming -> "LIVE  ${state.bitrateKbps} Kbps"
         state.isReconnecting -> "RECONNECTING  0 Kbps"
@@ -185,7 +220,17 @@ class StreamingService : Service(), ConnectChecker {
     }
 
     private fun showFloatingPreviewIfNeeded() {
-        if (appForeground || !state.wantsStreaming || floatingPreview != null) return
+        if (appForeground || !state.wantsStreaming) return
+        floatingPreview?.let { root ->
+            root.alpha = 1f
+            root.isClickable = true
+            (root.layoutParams as? WindowManager.LayoutParams)?.let { params ->
+                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+                runCatching { windowManager.updateViewLayout(root, params) }
+            }
+            updateFloatingOverlay()
+            return
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) return
 
         val density = resources.displayMetrics.density
@@ -285,7 +330,8 @@ class StreamingService : Service(), ConnectChecker {
             }
             override fun surfaceChanged(holder: android.view.SurfaceHolder, format: Int, width: Int, height: Int) = Unit
             override fun surfaceDestroyed(holder: android.view.SurfaceHolder) {
-                runCatching { stream.removePreviewSurface(holder.surface) }
+                // RootEncoder 2.8.2 keeps this secondary preview registered.
+
                 floatingSurface = null
             }
         })
@@ -301,14 +347,17 @@ class StreamingService : Service(), ConnectChecker {
     }
 
     private fun hideFloatingPreview() {
-        floatingSurface?.let { surface -> runCatching { stream.removePreviewSurface(surface) } }
-        floatingSurface = null
-        floatingPreview?.let { runCatching { windowManager.removeView(it) } }
-        floatingPreview = null
-        floatingSurfaceView = null
-        floatingStatus = null
-        floatingNetwork = null
-        floatingNano = null
+        // Keep the WindowManager view and RootEncoder surface alive for this
+        // GenericStream instance. Make it invisible and non-touchable while
+        // BENFOBOX is foregrounded or the stream is stopped.
+        floatingPreview?.let { root ->
+            root.alpha = 0f
+            root.isClickable = false
+            (root.layoutParams as? WindowManager.LayoutParams)?.let { params ->
+                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                runCatching { windowManager.updateViewLayout(root, params) }
+            }
+        }
     }
 
     fun addListener(listener: Listener) {
@@ -704,6 +753,7 @@ class StreamingService : Service(), ConnectChecker {
         userStopping = false
         retryIndex = 0
 
+        holdCellularWhileStreaming()
         state = state.copy(
             endpoint = clean,
             wantsStreaming = true,
@@ -832,6 +882,7 @@ class StreamingService : Service(), ConnectChecker {
         userStopping = true
 
         cancelRetry()
+        releaseCellularHold()
 
         state = state.copy(
             wantsStreaming = false,
@@ -1048,6 +1099,14 @@ class StreamingService : Service(), ConnectChecker {
         runCatching {
             stream.release()
         }
+        releaseCellularHold()
+        floatingPreview?.let { root -> runCatching { windowManager.removeView(root) } }
+        floatingPreview = null
+        floatingSurfaceView = null
+        floatingSurface = null
+        floatingStatus = null
+        floatingNetwork = null
+        floatingNano = null
 
         wakeLock
             ?.takeIf { it.isHeld }
