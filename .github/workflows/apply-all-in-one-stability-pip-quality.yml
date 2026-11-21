@@ -1,0 +1,185 @@
+name: Apply All In One Stability PiP Quality Patch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Find and validate patch ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mapfile -t PATCH_FILES < <(
+            find . \
+              -maxdepth 1 \
+              -type f \
+              -name 'BIG-IRL-APP-V2-all-in-one-stability-pip-quality*.zip' \
+              -print
+          )
+
+          if [[ "${#PATCH_FILES[@]}" -eq 0 ]]; then
+            echo "FAIL: all-in-one patch ZIP not found"
+            exit 1
+          fi
+
+          if [[ "${#PATCH_FILES[@]}" -gt 1 ]]; then
+            echo "FAIL: multiple matching patch ZIPs found"
+            printf '%s\n' "${PATCH_FILES[@]}"
+            exit 1
+          fi
+
+          PATCH_ZIP="${PATCH_FILES[0]}"
+
+          echo "Patch found: $PATCH_ZIP"
+
+          unzip -t "$PATCH_ZIP"
+
+          printf '%s' "$PATCH_ZIP" \
+            > /tmp/all-in-one-patch-path.txt
+
+      - name: Apply all-in-one patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH_ZIP="$(
+            cat /tmp/all-in-one-patch-path.txt
+          )"
+
+          rm -rf all-in-one-patch
+          mkdir all-in-one-patch
+
+          unzip -q \
+            "$PATCH_ZIP" \
+            -d all-in-one-patch
+
+          test -f \
+            all-in-one-patch/apply_all_in_one_patch.py
+
+          python3 \
+            all-in-one-patch/apply_all_in_one_patch.py
+
+          rm -rf all-in-one-patch
+          rm -f "$PATCH_ZIP"
+
+      - name: Verify complete patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MANIFEST="app/src/main/AndroidManifest.xml"
+          ACTIVITY="app/src/main/java/uk/co/bigirl/sender/MainActivity.kt"
+          SERVICE="app/src/main/java/uk/co/bigirl/sender/StreamingService.kt"
+          TELEMETRY="app/src/main/java/uk/co/bigirl/sender/StreamBoxTelemetry.kt"
+          PIP_RECEIVER="app/src/main/java/uk/co/bigirl/sender/PipActionReceiver.kt"
+
+          test -f "$PIP_RECEIVER"
+
+          grep -F \
+            'android:supportsPictureInPicture="true"' \
+            "$MANIFEST"
+
+          grep -F \
+            'PipActionReceiver' \
+            "$MANIFEST"
+
+          grep -F \
+            'enterPictureInPictureMode' \
+            "$ACTIVITY"
+
+          grep -F \
+            'Stop stream' \
+            "$ACTIVITY"
+
+          grep -F \
+            'adjustVideoBitrateKbps' \
+            "$SERVICE"
+
+          grep -F \
+            'setVideoBitrateOnFly' \
+            "$SERVICE"
+
+          grep -F \
+            'holdCellularWhileStreaming' \
+            "$SERVICE"
+
+          grep -F \
+            'releaseCellularHold' \
+            "$SERVICE"
+
+          grep -F \
+            '100.68.249.56:8082/status' \
+            "$TELEMETRY"
+
+          grep -F \
+            'Nano ready' \
+            "$ACTIVITY"
+
+          grep -F \
+            'Kbps' \
+            "$ACTIVITY"
+
+          if grep -Fq \
+            'SYSTEM_ALERT_WINDOW' \
+            "$MANIFEST"; then
+            echo "FAIL: obsolete overlay permission remains"
+            exit 1
+          fi
+
+          if grep -Fq \
+            'showFloatingPreviewIfNeeded' \
+            "$SERVICE"; then
+            echo "FAIL: obsolete custom floating preview remains"
+            exit 1
+          fi
+
+          if grep -Fq \
+            'removePreviewSurface' \
+            "$SERVICE"; then
+            echo "FAIL: unsupported preview-removal call remains"
+            exit 1
+          fi
+
+          echo "PASS: complete all-in-one patch verified"
+
+      - name: Compile and test before committing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          gradle \
+            --no-daemon \
+            test \
+            assembleDebug \
+            --stacktrace
+
+      - name: Commit patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m \
+            "Apply all-in-one stability PiP and live quality update"
+
+          git push
