@@ -14,12 +14,14 @@ import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.view.SurfaceView
 import androidx.core.app.NotificationCompat
 import com.pedro.common.ConnectChecker
 import com.pedro.encoder.input.sources.video.Camera2Source
 import com.pedro.encoder.utils.gl.AspectRatioMode
+import com.pedro.library.base.StreamBase
 import com.pedro.library.generic.GenericStream
 import java.util.concurrent.CopyOnWriteArraySet
 
@@ -39,6 +41,7 @@ class StreamingService : Service(), ConnectChecker {
         val requestedBitrateKbps: Long = 8_000,
         val endpoint: String = "",
         val profile: StreamProfile = StreamProfile.MAXIMUM_1080P60,
+        val transportMode: TransportMode = TransportMode.SINGLE_SRT,
         val torchEnabled: Boolean = false,
     )
 
@@ -60,7 +63,7 @@ class StreamingService : Service(), ConnectChecker {
     private val mainHandler = Handler(Looper.getMainLooper())
     private val listeners = CopyOnWriteArraySet<Listener>()
 
-    private lateinit var stream: GenericStream
+    private lateinit var stream: StreamBase
 
     private var state = StreamState()
     private var wakeLock: PowerManager.WakeLock? = null
@@ -73,30 +76,51 @@ class StreamingService : Service(), ConnectChecker {
     private val connectivityManager by lazy {
         getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
     }
-    private var cellularNetwork: android.net.Network? = null
+    private var cellularNetwork: Network? = null
     private var cellularRequestActive = false
     private val cellularCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: android.net.Network) {
-            cellularNetwork = network
+        override fun onAvailable(network: Network) {
+            mainHandler.post {
+                cellularNetwork = network
+                if (!state.wantsStreaming) return@post
+                connectNow()
             }
+        }
 
-        override fun onLost(network: android.net.Network) {
-            if (cellularNetwork == network) cellularNetwork = null
+        override fun onUnavailable() {
+            mainHandler.post {
+                if (cellularNetwork == null && state.wantsStreaming) {
+                    updateMessage("SIM network unavailable")
+                }
             }
+        }
+
+        override fun onLost(network: Network) {
+            mainHandler.post {
+                if (cellularNetwork != network) return@post
+                cellularNetwork = null
+                if (state.wantsStreaming) {
+                    if (stream.isStreaming) stream.stopStream()
+                    updateMessage("SIM lost; waiting for cellular network")
+                }
+            }
+        }
     }
 
     override fun onCreate() {
         super.onCreate()
 
-        createStream()
+        createStream(state.transportMode)
         createNotificationChannel()
     }
 
-    private fun createStream() {
-        stream = GenericStream(
-            applicationContext,
-            this,
-        ).apply {
+    private fun createStream(mode: TransportMode) {
+        stream = when (mode) {
+            TransportMode.SINGLE_SRT -> GenericStream(applicationContext, this)
+            TransportMode.RIST -> RistStream(applicationContext, this) {
+                cellularNetwork?.networkHandle
+            }
+        }.apply {
             getGlInterface().autoHandleOrientation = true
             getGlInterface().setAspectRatioMode(
                 AspectRatioMode.Adjust,
@@ -136,16 +160,21 @@ class StreamingService : Service(), ConnectChecker {
         }
     }
 
-    private fun holdCellularWhileStreaming() {
-        if (cellularRequestActive) return
+    private fun holdCellularWhileStreaming(): Boolean {
+        if (cellularRequestActive) return true
         val request = android.net.NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
             .build()
-        runCatching {
+        return runCatching {
             connectivityManager.requestNetwork(request, cellularCallback)
             cellularRequestActive = true
-        }.onFailure { Log.w(TAG, "Could not request cellular network", it) }
+            true
+        }.getOrElse { error ->
+            Log.e(TAG, "Could not request cellular network", error)
+            updateMessage("Could not request SIM network: ${error.message ?: "unknown error"}")
+            false
+        }
     }
 
     private fun releaseCellularHold() {
@@ -358,7 +387,7 @@ class StreamingService : Service(), ConnectChecker {
             stream.release()
         }
 
-        createStream()
+        createStream(state.transportMode)
 
         state = state.copy(
             isPrepared = false,
@@ -369,6 +398,50 @@ class StreamingService : Service(), ConnectChecker {
             profile = profile,
             torchEnabled = restoreTorch,
         )
+    }
+
+    fun selectTransport(mode: TransportMode): Boolean {
+        if (state.wantsStreaming) {
+            updateMessage("Stop streaming before changing transport")
+            return false
+        }
+        if (mode == state.transportMode) return true
+
+        val restoreTorch = state.torchEnabled
+        cancelRetry()
+        runCatching {
+            if (stream.isStreaming) stream.stopStream()
+        }.onFailure { error ->
+            Log.w(TAG, "Could not stop previous transport", error)
+        }
+        runCatching {
+            if (stream.isOnPreview) stream.stopPreview()
+        }.onFailure { error ->
+            Log.w(TAG, "Could not stop previous preview", error)
+        }
+        runCatching {
+            stream.release()
+        }.onFailure { error ->
+            Log.w(TAG, "Could not release previous transport", error)
+        }
+
+        state = state.copy(
+            transportMode = mode,
+            isPrepared = false,
+            isStreaming = false,
+            wantsStreaming = false,
+            isReconnecting = false,
+            bitrateKbps = 0,
+            torchEnabled = restoreTorch,
+        )
+        createStream(mode)
+
+        val preview = activeSurface
+        if (preview != null && preview.holder.surface.isValid) {
+            return prepareAndAttachPreview(preview, state.profile)
+        }
+        updateMessage("${mode.label} selected")
+        return true
     }
 
     fun detachPreview() {
@@ -493,6 +566,11 @@ class StreamingService : Service(), ConnectChecker {
 
     fun startSrt(
         endpoint: String,
+    ): Boolean = startTransport(TransportMode.SINGLE_SRT, endpoint)
+
+    fun startTransport(
+        mode: TransportMode,
+        endpoint: String,
     ): Boolean {
         val clean = endpoint.trim()
 
@@ -514,28 +592,29 @@ class StreamingService : Service(), ConnectChecker {
             }.getOrNull()
 
         val validEndpoint =
-            parsedEndpoint?.scheme.equals(
-                "srt",
-                ignoreCase = true,
-            ) &&
+            parsedEndpoint?.scheme.equals(mode.scheme, ignoreCase = true) &&
                 !parsedEndpoint?.host
                     .isNullOrBlank() &&
                 (
                     parsedEndpoint?.port
                         ?: -1
                     ) in 1..65535 &&
-                !parsedEndpoint?.path
-                    .isNullOrBlank() &&
-                parsedEndpoint?.path != "/"
+                when (mode) {
+                    TransportMode.SINGLE_SRT ->
+                        !parsedEndpoint?.path.isNullOrBlank() && parsedEndpoint?.path != "/"
+                    TransportMode.RIST -> true
+                }
 
         if (!validEndpoint) {
-            updateMessage(
-                "Use srt://host:port/streamid " +
-                    "(IPv6 must use [brackets])",
-            )
-
+            val example = when (mode) {
+                TransportMode.SINGLE_SRT -> "srt://host:port/streamid"
+                TransportMode.RIST -> "rist://host:port"
+            }
+            updateMessage("Use $example (IPv6 must use [brackets])")
             return false
         }
+
+        if (mode != state.transportMode && !selectTransport(mode)) return false
 
         if (!state.isPrepared) {
             updateMessage(
@@ -548,8 +627,9 @@ class StreamingService : Service(), ConnectChecker {
         userStopping = false
         retryIndex = 0
 
-        holdCellularWhileStreaming()
+        if (!holdCellularWhileStreaming()) return false
         state = state.copy(
+            transportMode = mode,
             endpoint = clean,
             wantsStreaming = true,
             isReconnecting = false,
@@ -569,6 +649,16 @@ class StreamingService : Service(), ConnectChecker {
             return false
         }
 
+        val network = cellularNetwork
+        if (network == null) {
+            state = state.copy(
+                isStreaming = false,
+                isReconnecting = true,
+                bitrateKbps = 0,
+            )
+            updateMessage("Waiting for SIM network")
+            return true
+        }
         cancelRetry()
 
         return try {
@@ -592,10 +682,7 @@ class StreamingService : Service(), ConnectChecker {
 
             updateMessage(message)
 
-            Log.i(
-                TAG,
-                "Starting SRT: ${state.endpoint}",
-            )
+            Log.i(TAG, "Starting ${state.transportMode.label}: ${state.endpoint}")
 
             stream.startStream(
                 state.endpoint,
@@ -748,9 +835,7 @@ class StreamingService : Service(), ConnectChecker {
         )
 
         if (state.wantsStreaming) {
-            updateMessage(
-                "SRT handshake started",
-            )
+            updateMessage("Connecting over ${state.transportMode.label}")
         }
     }
 
@@ -758,7 +843,7 @@ class StreamingService : Service(), ConnectChecker {
         Log.i(TAG, "SRT connected")
         retryIndex = 0
         state = state.copy(isStreaming = true, isReconnecting = false)
-        updateMessage("Live over SRT")
+        updateMessage("Live over ${state.transportMode.label}")
 
         // Give the receiver a fresh decoder entry point as soon as SRT is established.
         // RootEncoder prepends the current codec configuration when requesting a keyframe.
@@ -798,7 +883,7 @@ class StreamingService : Service(), ConnectChecker {
             scheduleReconnect(detail)
         } else {
             updateMessage(
-                "SRT failed: $detail",
+                "${state.transportMode.label} failed: $detail",
             )
         }
     }
@@ -834,7 +919,7 @@ class StreamingService : Service(), ConnectChecker {
     override fun onDisconnect() {
         Log.w(
             TAG,
-            "SRT disconnected",
+            "${state.transportMode.label} disconnected",
         )
 
         state = state.copy(

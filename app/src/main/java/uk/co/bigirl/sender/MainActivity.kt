@@ -70,6 +70,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 
+private const val LEGACY_LAN_ENDPOINT = "srt://192.168.1.27:10000/live"
+
 class MainActivity : ComponentActivity() {
     private var pipMode by mutableStateOf(false)
     private var service by mutableStateOf<StreamingService?>(null)
@@ -153,13 +155,23 @@ private fun BigIrlV2(service: StreamingService?, pipMode: Boolean) {
         context.getSharedPreferences("big_irl_v2", Context.MODE_PRIVATE)
     }
 
-    var endpoint by remember {
+    var selectedTransport by remember {
+        val saved = preferences.getString("transport", TransportMode.SINGLE_SRT.name)
         mutableStateOf(
-            preferences.getString(
-                "endpoint",
-                "srt://192.168.1.27:10000/live",
-            ) ?: "srt://192.168.1.27:10000/live",
+            runCatching { TransportMode.valueOf(saved.orEmpty()) }
+                .getOrDefault(TransportMode.SINGLE_SRT),
         )
+    }
+    var endpoint by remember(selectedTransport) {
+        val savedEndpoint = preferences.getString("endpoint_${selectedTransport.name.lowercase()}", null)
+        val legacyEndpoint = preferences.getString("endpoint", null)
+        val initialEndpoint = savedEndpoint ?: when (selectedTransport) {
+            TransportMode.SINGLE_SRT -> legacyEndpoint
+                ?.takeUnless { it == LEGACY_LAN_ENDPOINT }
+                ?: selectedTransport.defaultEndpoint
+            TransportMode.RIST -> selectedTransport.defaultEndpoint
+        }
+        mutableStateOf(initialEndpoint)
     }
     var selectedProfile by remember {
         val saved = preferences.getString("profile", StreamProfile.MAXIMUM_1080P60.name)
@@ -172,6 +184,7 @@ private fun BigIrlV2(service: StreamingService?, pipMode: Boolean) {
         mutableStateOf(preferences.getBoolean("controls_on_left", false))
     }
     var profileMenuOpen by remember { mutableStateOf(false) }
+    var transportMenuOpen by remember { mutableStateOf(false) }
     var permissionsGranted by remember { mutableStateOf(hasRequiredPermissions(context)) }
     var streamState by remember {
         mutableStateOf(
@@ -216,6 +229,12 @@ private fun BigIrlV2(service: StreamingService?, pipMode: Boolean) {
         }
     }
 
+    LaunchedEffect(service, selectedTransport) {
+        if (service != null && service.currentState().transportMode != selectedTransport) {
+            service.selectTransport(selectedTransport)
+        }
+    }
+
     LaunchedEffect(Unit) {
         while (true) {
             phoneNetworkState = readPhoneNetworkState(context)
@@ -256,6 +275,8 @@ private fun BigIrlV2(service: StreamingService?, pipMode: Boolean) {
                     streamState = streamState,
                     selectedProfile = selectedProfile,
                     endpoint = endpoint,
+                    selectedTransport = selectedTransport,
+                    transportMenuOpen = transportMenuOpen,
                     profileMenuOpen = profileMenuOpen,
                     controlsOnLeft = controlsOnLeft,
                     streamBoxTelemetry = streamBoxTelemetry,
@@ -264,7 +285,15 @@ private fun BigIrlV2(service: StreamingService?, pipMode: Boolean) {
                     onPermissionRequest = { permissionLauncher.launch(requiredPermissions()) },
                     onEndpointChange = {
                         endpoint = it
-                        preferences.edit().putString("endpoint", it).apply()
+                        preferences.edit()
+                            .putString("endpoint_${selectedTransport.name.lowercase()}", it)
+                            .apply()
+                    },
+                    onTransportMenuChange = { transportMenuOpen = it },
+                    onTransportSelected = {
+                        selectedTransport = it
+                        preferences.edit().putString("transport", it.name).apply()
+                        service?.selectTransport(it)
                     },
                     onProfileMenuChange = { profileMenuOpen = it },
                     onProfileSelected = {
@@ -284,6 +313,8 @@ private fun BigIrlV2(service: StreamingService?, pipMode: Boolean) {
                     streamState = streamState,
                     selectedProfile = selectedProfile,
                     endpoint = endpoint,
+                    selectedTransport = selectedTransport,
+                    transportMenuOpen = transportMenuOpen,
                     profileMenuOpen = profileMenuOpen,
                     controlsOnLeft = controlsOnLeft,
                     streamBoxTelemetry = streamBoxTelemetry,
@@ -292,7 +323,15 @@ private fun BigIrlV2(service: StreamingService?, pipMode: Boolean) {
                     onPermissionRequest = { permissionLauncher.launch(requiredPermissions()) },
                     onEndpointChange = {
                         endpoint = it
-                        preferences.edit().putString("endpoint", it).apply()
+                        preferences.edit()
+                            .putString("endpoint_${selectedTransport.name.lowercase()}", it)
+                            .apply()
+                    },
+                    onTransportMenuChange = { transportMenuOpen = it },
+                    onTransportSelected = {
+                        selectedTransport = it
+                        preferences.edit().putString("transport", it.name).apply()
+                        service?.selectTransport(it)
                     },
                     onProfileMenuChange = { profileMenuOpen = it },
                     onProfileSelected = {
@@ -317,6 +356,8 @@ private fun LandscapeStudio(
     streamState: StreamingService.StreamState,
     selectedProfile: StreamProfile,
     endpoint: String,
+    selectedTransport: TransportMode,
+    transportMenuOpen: Boolean,
     profileMenuOpen: Boolean,
     controlsOnLeft: Boolean,
     streamBoxTelemetry: StreamBoxTelemetry,
@@ -324,6 +365,8 @@ private fun LandscapeStudio(
     onSurfaceReady: (SurfaceView?) -> Unit,
     onPermissionRequest: () -> Unit,
     onEndpointChange: (String) -> Unit,
+    onTransportMenuChange: (Boolean) -> Unit,
+    onTransportSelected: (TransportMode) -> Unit,
     onProfileMenuChange: (Boolean) -> Unit,
     onProfileSelected: (StreamProfile) -> Unit,
     onControlsSideChange: (Boolean) -> Unit,
@@ -344,9 +387,13 @@ private fun LandscapeStudio(
                 streamState = streamState,
                 selectedProfile = selectedProfile,
                 endpoint = endpoint,
+                selectedTransport = selectedTransport,
+                transportMenuOpen = transportMenuOpen,
                 profileMenuOpen = profileMenuOpen,
                 controlsOnLeft = controlsOnLeft,
                 onEndpointChange = onEndpointChange,
+                onTransportMenuChange = onTransportMenuChange,
+                onTransportSelected = onTransportSelected,
                 onProfileMenuChange = onProfileMenuChange,
                 onProfileSelected = onProfileSelected,
                 onControlsSideChange = onControlsSideChange,
@@ -374,9 +421,13 @@ private fun LandscapeStudio(
                 streamState = streamState,
                 selectedProfile = selectedProfile,
                 endpoint = endpoint,
+                selectedTransport = selectedTransport,
+                transportMenuOpen = transportMenuOpen,
                 profileMenuOpen = profileMenuOpen,
                 controlsOnLeft = controlsOnLeft,
                 onEndpointChange = onEndpointChange,
+                onTransportMenuChange = onTransportMenuChange,
+                onTransportSelected = onTransportSelected,
                 onProfileMenuChange = onProfileMenuChange,
                 onProfileSelected = onProfileSelected,
                 onControlsSideChange = onControlsSideChange,
@@ -393,6 +444,8 @@ private fun PortraitStudio(
     streamState: StreamingService.StreamState,
     selectedProfile: StreamProfile,
     endpoint: String,
+    selectedTransport: TransportMode,
+    transportMenuOpen: Boolean,
     profileMenuOpen: Boolean,
     controlsOnLeft: Boolean,
     streamBoxTelemetry: StreamBoxTelemetry,
@@ -400,6 +453,8 @@ private fun PortraitStudio(
     onSurfaceReady: (SurfaceView?) -> Unit,
     onPermissionRequest: () -> Unit,
     onEndpointChange: (String) -> Unit,
+    onTransportMenuChange: (Boolean) -> Unit,
+    onTransportSelected: (TransportMode) -> Unit,
     onProfileMenuChange: (Boolean) -> Unit,
     onProfileSelected: (StreamProfile) -> Unit,
     onControlsSideChange: (Boolean) -> Unit,
@@ -439,9 +494,13 @@ private fun PortraitStudio(
             streamState = streamState,
             selectedProfile = selectedProfile,
             endpoint = endpoint,
+            selectedTransport = selectedTransport,
+            transportMenuOpen = transportMenuOpen,
             profileMenuOpen = profileMenuOpen,
             controlsOnLeft = controlsOnLeft,
             onEndpointChange = onEndpointChange,
+            onTransportMenuChange = onTransportMenuChange,
+            onTransportSelected = onTransportSelected,
             onProfileMenuChange = onProfileMenuChange,
             onProfileSelected = onProfileSelected,
             onControlsSideChange = onControlsSideChange,
@@ -529,9 +588,13 @@ private fun ControlPanel(
     streamState: StreamingService.StreamState,
     selectedProfile: StreamProfile,
     endpoint: String,
+    selectedTransport: TransportMode,
+    transportMenuOpen: Boolean,
     profileMenuOpen: Boolean,
     controlsOnLeft: Boolean,
     onEndpointChange: (String) -> Unit,
+    onTransportMenuChange: (Boolean) -> Unit,
+    onTransportSelected: (TransportMode) -> Unit,
     onProfileMenuChange: (Boolean) -> Unit,
     onProfileSelected: (StreamProfile) -> Unit,
     onControlsSideChange: (Boolean) -> Unit,
@@ -564,12 +627,20 @@ private fun ControlPanel(
             )
         }
 
+        TransportSelector(
+            selectedTransport = selectedTransport,
+            menuOpen = transportMenuOpen,
+            enabled = !streamState.wantsStreaming,
+            onMenuChange = onTransportMenuChange,
+            onTransportSelected = onTransportSelected,
+        )
+
         OutlinedTextField(
             value = endpoint,
             onValueChange = onEndpointChange,
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("SRT destination") },
-            supportingText = { Text("srt://ip:port/streamid") },
+            label = { Text(selectedTransport.destinationLabel) },
+            supportingText = { Text(selectedTransport.destinationHelp) },
             singleLine = true,
         )
 
@@ -581,7 +652,7 @@ private fun ControlPanel(
                 modifier = Modifier.weight(1f),
                 enabled = permissionsGranted && service != null &&
                     streamState.isPrepared && !streamState.wantsStreaming,
-                onClick = { service?.startSrt(endpoint) },
+                onClick = { service?.startTransport(selectedTransport, endpoint) },
             ) { Text("START") }
 
             Button(
@@ -590,6 +661,12 @@ private fun ControlPanel(
                 onClick = { service?.stopStream() },
             ) { Text("STOP") }
         }
+
+        Text(
+            text = streamState.message,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
 
         if (streamState.wantsStreaming) {
             Row(
@@ -611,6 +688,39 @@ private fun ControlPanel(
             }
         }
         Text("Active profile: ${streamState.profile.label}")
+    }
+}
+
+@Composable
+private fun TransportSelector(
+    selectedTransport: TransportMode,
+    menuOpen: Boolean,
+    enabled: Boolean,
+    onMenuChange: (Boolean) -> Unit,
+    onTransportSelected: (TransportMode) -> Unit,
+) {
+    Box {
+        OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            enabled = enabled,
+            onClick = { onMenuChange(true) },
+        ) {
+            Text(selectedTransport.label)
+        }
+        DropdownMenu(
+            expanded = menuOpen,
+            onDismissRequest = { onMenuChange(false) },
+        ) {
+            TransportMode.entries.forEach { mode ->
+                DropdownMenuItem(
+                    text = { Text(mode.label) },
+                    onClick = {
+                        onMenuChange(false)
+                        onTransportSelected(mode)
+                    },
+                )
+            }
+        }
     }
 }
 

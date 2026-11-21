@@ -9,6 +9,7 @@ plugins {
 android {
     namespace = "uk.co.bigirl.sender"
     compileSdk = 35
+    ndkVersion = "27.2.12479018"
 
     defaultConfig {
         applicationId = "uk.co.bigirl.sender"
@@ -16,9 +17,16 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0-alpha01"
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     buildFeatures { compose = true }
+
+    sourceSets.getByName("main") {
+        jniLibs.srcDir(layout.buildDirectory.dir("generated/jniLibs"))
+    }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -43,4 +51,38 @@ dependencies {
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     testImplementation("junit:junit:4.13.2")
+}
+
+val buildLibristForAndroid by tasks.registering(Exec::class) {
+    val nativeSource = layout.projectDirectory.dir("src/main/cpp")
+    val nativeBuild = layout.buildDirectory.dir("librist-android")
+    val nativeOutput = layout.buildDirectory.dir("generated/jniLibs")
+    val ndkHome = providers.environmentVariable("ANDROID_NDK_HOME")
+
+    inputs.files(
+        nativeSource.file("meson.build"),
+        nativeSource.file("native_rist_sender.c"),
+        layout.projectDirectory.file("scripts/build-librist-android.py"),
+    )
+    outputs.dir(nativeOutput)
+    doFirst {
+        val ndk = ndkHome.orNull
+            ?: error("ANDROID_NDK_HOME must point to Android NDK 27.2.12479018")
+        commandLine(
+            "python3",
+            layout.projectDirectory.file("scripts/build-librist-android.py").asFile.absolutePath,
+            "--ndk",
+            ndk,
+            "--source",
+            nativeSource.asFile.absolutePath,
+            "--build",
+            nativeBuild.get().asFile.absolutePath,
+            "--output",
+            nativeOutput.get().asFile.absolutePath,
+        )
+    }
+}
+
+tasks.named("preBuild").configure {
+    dependsOn(buildLibristForAndroid)
 }
