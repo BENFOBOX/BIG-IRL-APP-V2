@@ -26,26 +26,33 @@ data class PhoneNetworkState(
 )
 
 suspend fun fetchStreamBoxTelemetry(): StreamBoxTelemetry = withContext(Dispatchers.IO) {
-    try {
-        val connection = (URL("http://192.168.1.27:8082/status").openConnection() as HttpURLConnection).apply {
-            connectTimeout = 800
-            readTimeout = 800
-            requestMethod = "GET"
+    val endpoints = listOf(
+        "http://192.168.1.27:8082/status",
+        "http://100.68.249.56:8082/status",
+    )
+    for (endpoint in endpoints) {
+        try {
+            val connection = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+                connectTimeout = 700
+                readTimeout = 700
+                requestMethod = "GET"
+            }
+            val body = connection.inputStream.bufferedReader().use { it.readText() }
+            val json = JSONObject(body)
+            return@withContext StreamBoxTelemetry(
+                online = true,
+                connected = json.optBoolean("connected", false),
+                receivedKbps = json.optLong("received_kbps", 0),
+                width = json.optInt("width", 0),
+                height = json.optInt("height", 0),
+                fps = json.optDouble("fps", 0.0),
+                nanoTemperatureC = json.optDouble("temperature_c", 0.0),
+            )
+        } catch (_: Throwable) {
+            // Try the next safe management route.
         }
-        val body = connection.inputStream.bufferedReader().use { it.readText() }
-        val json = JSONObject(body)
-        StreamBoxTelemetry(
-            online = true,
-            connected = json.optBoolean("connected", false),
-            receivedKbps = json.optLong("received_kbps", 0),
-            width = json.optInt("width", 0),
-            height = json.optInt("height", 0),
-            fps = json.optDouble("fps", 0.0),
-            nanoTemperatureC = json.optDouble("temperature_c", 0.0),
-        )
-    } catch (_: Throwable) {
-        StreamBoxTelemetry()
     }
+    StreamBoxTelemetry()
 }
 
 fun readPhoneNetworkState(context: Context): PhoneNetworkState {

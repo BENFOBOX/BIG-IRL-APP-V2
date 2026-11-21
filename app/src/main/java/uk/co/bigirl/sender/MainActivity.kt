@@ -4,14 +4,17 @@ import android.Manifest
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.os.Bundle
+import android.app.PictureInPictureParams
+import android.app.RemoteAction
+import android.app.PendingIntent
+import android.graphics.drawable.Icon
+import android.util.Rational
 import android.os.IBinder
-import android.provider.Settings
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.activity.ComponentActivity
@@ -68,6 +71,7 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
+    private var pipMode by mutableStateOf(false)
     private var service by mutableStateOf<StreamingService?>(null)
 
     private val connection = object : ServiceConnection {
@@ -82,15 +86,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) {
-            startActivity(
-                Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName"),
-                ),
-            )
-        }
-        setContent { BigIrlV2(service) }
+        setContent { BigIrlV2(service, pipMode) }
     }
 
     override fun onStart() {
@@ -101,6 +97,38 @@ class MainActivity : ComponentActivity() {
     override fun onStop() {
         service?.setAppForeground(false)
         super.onStop()
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (service?.currentState()?.wantsStreaming == true && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val stopIntent = Intent(this, PipActionReceiver::class.java).apply {
+                action = PipActionReceiver.ACTION_STOP_STREAM
+            }
+            val stopPending = PendingIntent.getBroadcast(
+                this, 3001, stopIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val stopAction = RemoteAction(
+                Icon.createWithResource(this, android.R.drawable.ic_media_pause),
+                "Stop stream", "Stop stream", stopPending,
+            )
+            enterPictureInPictureMode(
+                PictureInPictureParams.Builder()
+                    .setAspectRatio(Rational(16, 9))
+                    .setActions(listOf(stopAction))
+                    .build(),
+            )
+        }
+    }
+
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        pipMode = isInPictureInPictureMode
+        service?.setAppForeground(!isInPictureInPictureMode)
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
     }
 
     fun startAndBindStreamingService() {
@@ -116,7 +144,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun BigIrlV2(service: StreamingService?) {
+private fun BigIrlV2(service: StreamingService?, pipMode: Boolean) {
     val context = LocalContext.current
     val activity = context as MainActivity
     val configuration = LocalConfiguration.current
@@ -209,7 +237,19 @@ private fun BigIrlV2(service: StreamingService?) {
 
     MaterialTheme(colorScheme = colours) {
         Surface(modifier = Modifier.fillMaxSize()) {
-            if (isLandscape) {
+            if (pipMode) {
+                PreviewPanel(
+                    modifier = Modifier.fillMaxSize(),
+                    service = service,
+                    permissionsGranted = permissionsGranted,
+                    selectedProfile = selectedProfile,
+                    streamState = streamState,
+                    streamBoxTelemetry = streamBoxTelemetry,
+                    phoneNetworkState = phoneNetworkState,
+                    onSurfaceReady = { surfaceReady = it },
+                    onPermissionRequest = { permissionLauncher.launch(requiredPermissions()) },
+                )
+            } else if (isLandscape) {
                 LandscapeStudio(
                     service = service,
                     permissionsGranted = permissionsGranted,
@@ -507,28 +547,6 @@ private fun ControlPanel(
         modifier = panelModifier,
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Card(
-            colors = CardDefaults.cardColors(
-                containerColor = when {
-                    streamState.isStreaming -> Color(0xFF123A2D)
-                    streamState.isReconnecting -> Color(0xFF3A2D12)
-                    else -> Color(0xFF101D2B)
-                },
-            ),
-        ) {
-            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(streamState.message)
-                Text(
-                    when {
-                        streamState.isStreaming -> "LIVE | ${streamState.bitrateKbps} Kbps"
-                        streamState.isReconnecting -> "RECONNECTING | 0 Kbps"
-                        else -> "IDLE | 0 Kbps"
-                    },
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-        }
-
         OutlinedButton(
             modifier = Modifier.fillMaxWidth(),
             onClick = { onControlsSideChange(!controlsOnLeft) },
@@ -536,13 +554,15 @@ private fun ControlPanel(
             Text(if (controlsOnLeft) "Controls: LEFT" else "Controls: RIGHT")
         }
 
-        ProfileSelector(
-            selectedProfile = selectedProfile,
-            profileMenuOpen = profileMenuOpen,
-            enabled = !streamState.wantsStreaming,
-            onProfileMenuChange = onProfileMenuChange,
-            onProfileSelected = onProfileSelected,
-        )
+        if (scrollable) {
+            ProfileSelector(
+                selectedProfile = selectedProfile,
+                profileMenuOpen = profileMenuOpen,
+                enabled = !streamState.wantsStreaming,
+                onProfileMenuChange = onProfileMenuChange,
+                onProfileSelected = onProfileSelected,
+            )
+        }
 
         OutlinedTextField(
             value = endpoint,
@@ -571,6 +591,25 @@ private fun ControlPanel(
             ) { Text("STOP") }
         }
 
+        if (streamState.wantsStreaming) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = { service?.adjustVideoBitrateKbps(-500) },
+                ) { Text("-500 Kbps") }
+                Text(
+                    "Target ${streamState.requestedBitrateKbps} Kbps",
+                    modifier = Modifier.align(Alignment.CenterVertically),
+                )
+                OutlinedButton(
+                    modifier = Modifier.weight(1f),
+                    onClick = { service?.adjustVideoBitrateKbps(500) },
+                ) { Text("+500 Kbps") }
+            }
+        }
         Text("Active profile: ${streamState.profile.label}")
     }
 }
@@ -686,7 +725,7 @@ private fun ReceiverOverlay(
             telemetry.online -> "Nano ${"%.1f".format(telemetry.nanoTemperatureC)} C"
             streamState.isStreaming -> "Nano live"
             streamState.isReconnecting -> "Nano reconnecting"
-            else -> "Nano offline"
+            else -> "Nano ready"
         }
         Text(
             nanoStatus,
@@ -724,13 +763,7 @@ private fun TorchOverlay(
     }
 }
 
-private fun compactRate(kbps: Long): String {
-    return when {
-        kbps >= 1_000 -> "${"%.1f".format(kbps / 1_000.0)}M"
-        kbps > 0 -> "${kbps}K"
-        else -> "0"
-    }
-}
+private fun compactRate(kbps: Long): String = "${kbps.coerceAtLeast(0)} Kbps"
 
 private fun requiredPermissions(): Array<String> = buildList {
     add(Manifest.permission.CAMERA)

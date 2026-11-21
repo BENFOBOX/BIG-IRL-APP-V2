@@ -13,22 +13,8 @@ import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
-import android.graphics.Color
-import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
-import android.graphics.drawable.ColorDrawable
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.provider.Settings
-import android.view.Gravity
-import android.view.MotionEvent
-import android.view.Surface
-import android.view.View
-import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.LinearLayout
-import android.widget.TextView
-import com.pedro.library.view.preview.MultiPreviewConfig
 import android.view.SurfaceView
 import androidx.core.app.NotificationCompat
 import com.pedro.common.ConnectChecker
@@ -50,6 +36,7 @@ class StreamingService : Service(), ConnectChecker {
         val wantsStreaming: Boolean = false,
         val isReconnecting: Boolean = false,
         val bitrateKbps: Long = 0,
+        val requestedBitrateKbps: Long = 8_000,
         val endpoint: String = "",
         val profile: StreamProfile = StreamProfile.MAXIMUM_1080P60,
         val torchEnabled: Boolean = false,
@@ -82,15 +69,7 @@ class StreamingService : Service(), ConnectChecker {
     private var retryRunnable: Runnable? = null
     private var userStopping = false
     private var previewAttachInProgress = false
-    private lateinit var windowManager: WindowManager
-    private var floatingPreview: FrameLayout? = null
-    private var floatingSurfaceView: SurfaceView? = null
-    private var floatingSurface: Surface? = null
-    private var floatingStatus: TextView? = null
-    private var floatingNetwork: TextView? = null
-    private var floatingNano: TextView? = null
     private var appForeground = true
-    private val showFloatingRunnable = Runnable { showFloatingPreviewIfNeeded() }
     private val connectivityManager by lazy {
         getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
     }
@@ -99,19 +78,16 @@ class StreamingService : Service(), ConnectChecker {
     private val cellularCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: android.net.Network) {
             cellularNetwork = network
-            updateFloatingOverlay()
-        }
+            }
 
         override fun onLost(network: android.net.Network) {
             if (cellularNetwork == network) cellularNetwork = null
-            updateFloatingOverlay()
-        }
+            }
     }
 
     override fun onCreate() {
         super.onCreate()
 
-        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         createStream()
         createNotificationChannel()
     }
@@ -149,11 +125,14 @@ class StreamingService : Service(), ConnectChecker {
 
     fun setAppForeground(foreground: Boolean) {
         appForeground = foreground
-        mainHandler.removeCallbacks(showFloatingRunnable)
-        if (foreground) {
-            hideFloatingPreview()
-        } else if (state.wantsStreaming) {
-            mainHandler.postDelayed(showFloatingRunnable, 250L)
+        if (foreground) refreshPreview()
+    }
+
+    fun refreshPreview() {
+        activeSurface?.let { surface ->
+            if (surface.holder.surface.isValid) {
+                mainHandler.post { prepareAndAttachPreview(surface, state.profile) }
+            }
         }
     }
 
@@ -174,190 +153,6 @@ class StreamingService : Service(), ConnectChecker {
         runCatching { connectivityManager.unregisterNetworkCallback(cellularCallback) }
         cellularRequestActive = false
         cellularNetwork = null
-    }
-
-    private fun streamStatusLabel(): String = when {
-        state.isStreaming -> "LIVE  ${state.bitrateKbps} Kbps"
-        state.isReconnecting -> "RECONNECTING  0 Kbps"
-        state.wantsStreaming -> "CONNECTING  0 Kbps"
-        else -> "IDLE  0 Kbps"
-    }
-
-    private fun statusColour(): Int = when {
-        state.isStreaming -> Color.rgb(81, 225, 166)
-        state.isReconnecting || state.wantsStreaming -> Color.rgb(255, 184, 77)
-        else -> Color.rgb(180, 190, 200)
-    }
-
-    private fun networkSummary(): String {
-        val manager = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-        var wifi = false
-        var cellular = false
-        manager.allNetworks.forEach { network ->
-            manager.getNetworkCapabilities(network)?.let { caps ->
-                wifi = wifi || caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
-                cellular = cellular || caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
-            }
-        }
-        return "${if (wifi) "●" else "○"} Wi-Fi   ${if (cellular) "●" else "○"} SIM"
-    }
-
-    private fun updateFloatingOverlay() {
-        floatingStatus?.apply {
-            text = streamStatusLabel()
-            setTextColor(statusColour())
-        }
-        floatingNetwork?.text = networkSummary()
-        floatingNano?.apply {
-            text = when {
-                state.isStreaming -> "Nano live"
-                state.isReconnecting -> "Nano reconnecting"
-                state.wantsStreaming -> "Nano connecting"
-                else -> "Nano idle"
-            }
-            setTextColor(statusColour())
-        }
-    }
-
-    private fun showFloatingPreviewIfNeeded() {
-        if (appForeground || !state.wantsStreaming) return
-        floatingPreview?.let { root ->
-            root.alpha = 1f
-            root.isClickable = true
-            (root.layoutParams as? WindowManager.LayoutParams)?.let { params ->
-                params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-                runCatching { windowManager.updateViewLayout(root, params) }
-            }
-            updateFloatingOverlay()
-            return
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && !Settings.canDrawOverlays(this)) return
-
-        val density = resources.displayMetrics.density
-        val width = (260 * density).toInt()
-        val previewHeight = (146 * density).toInt()
-        val totalHeight = (198 * density).toInt()
-
-        val root = FrameLayout(this).apply {
-            background = GradientDrawable().apply {
-                setColor(Color.rgb(7, 16, 25))
-                cornerRadius = 14 * density
-                setStroke((2 * density).toInt(), Color.argb(220, 81, 225, 166))
-            }
-            setPadding((5 * density).toInt(), (5 * density).toInt(), (5 * density).toInt(), (5 * density).toInt())
-            setOnClickListener {
-                startActivity(
-                    Intent(this@StreamingService, MainActivity::class.java).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                    },
-                )
-            }
-        }
-        val surfaceView = SurfaceView(this)
-        root.addView(surfaceView, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, previewHeight))
-
-        val info = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding((7 * density).toInt(), (3 * density).toInt(), (7 * density).toInt(), 0)
-            background = ColorDrawable(Color.argb(215, 7, 16, 25))
-        }
-        fun line(size: Float, bold: Boolean = false) = TextView(this).apply {
-            textSize = size
-            setTextColor(Color.WHITE)
-            if (bold) setTypeface(typeface, android.graphics.Typeface.BOLD)
-            includeFontPadding = false
-        }
-        floatingStatus = line(11f, true).also(info::addView)
-        floatingNetwork = line(9f).also(info::addView)
-        floatingNano = line(9f).also(info::addView)
-        root.addView(
-            info,
-            FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT).apply {
-                gravity = Gravity.BOTTOM
-            },
-        )
-
-        val params = WindowManager.LayoutParams(
-            width,
-            totalHeight,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-            PixelFormat.TRANSLUCENT,
-        ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = (12 * density).toInt()
-            y = (90 * density).toInt()
-        }
-        var downX = 0f
-        var downY = 0f
-        var startX = 0
-        var startY = 0
-        var dragged = false
-        root.setOnTouchListener { view, event ->
-            when (event.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    downX = event.rawX; downY = event.rawY
-                    startX = params.x; startY = params.y
-                    dragged = false
-                    true
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    val dx = event.rawX - downX
-                    val dy = event.rawY - downY
-                    if (kotlin.math.abs(dx) > 8 || kotlin.math.abs(dy) > 8) dragged = true
-                    params.x = (startX - dx).toInt()
-                    params.y = (startY + dy).toInt().coerceAtLeast(0)
-                    runCatching { windowManager.updateViewLayout(root, params) }
-                    true
-                }
-                MotionEvent.ACTION_UP -> {
-                    if (!dragged) view.performClick()
-                    true
-                }
-                else -> false
-            }
-        }
-        surfaceView.holder.addCallback(object : android.view.SurfaceHolder.Callback {
-            override fun surfaceCreated(holder: android.view.SurfaceHolder) {
-                floatingSurface = holder.surface
-                runCatching {
-                    stream.addPreviewSurface(
-                        holder.surface,
-                        MultiPreviewConfig(width = width, height = previewHeight, aspectRatioMode = AspectRatioMode.Adjust),
-                    )
-                }.onFailure { Log.e(TAG, "Could not attach floating preview", it) }
-            }
-            override fun surfaceChanged(holder: android.view.SurfaceHolder, format: Int, width: Int, height: Int) = Unit
-            override fun surfaceDestroyed(holder: android.view.SurfaceHolder) {
-                // RootEncoder 2.8.2 keeps this secondary preview registered.
-
-                floatingSurface = null
-            }
-        })
-        floatingPreview = root
-        floatingSurfaceView = surfaceView
-        updateFloatingOverlay()
-        runCatching { windowManager.addView(root, params) }
-            .onFailure {
-                Log.e(TAG, "Could not show floating preview", it)
-                floatingPreview = null
-                floatingSurfaceView = null
-            }
-    }
-
-    private fun hideFloatingPreview() {
-        // Keep the WindowManager view and RootEncoder surface alive for this
-        // GenericStream instance. Make it invisible and non-touchable while
-        // BENFOBOX is foregrounded or the stream is stopped.
-        floatingPreview?.let { root ->
-            root.alpha = 0f
-            root.isClickable = false
-            (root.layoutParams as? WindowManager.LayoutParams)?.let { params ->
-                params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                runCatching { windowManager.updateViewLayout(root, params) }
-            }
-        }
     }
 
     fun addListener(listener: Listener) {
@@ -759,10 +554,10 @@ class StreamingService : Service(), ConnectChecker {
             wantsStreaming = true,
             isReconnecting = false,
             bitrateKbps = 0,
+            requestedBitrateKbps = state.profile.videoBitrate / 1000L,
         )
 
         val started = connectNow()
-        if (!appForeground) mainHandler.postDelayed(showFloatingRunnable, 250L)
         return started
     }
 
@@ -878,6 +673,22 @@ class StreamingService : Service(), ConnectChecker {
         retryRunnable = null
     }
 
+    fun adjustVideoBitrateKbps(deltaKbps: Int): Boolean {
+        if (!state.wantsStreaming) return false
+        val next = (state.requestedBitrateKbps + deltaKbps).coerceIn(1_000L, 20_000L)
+        return runCatching {
+            stream.setVideoBitrateOnFly((next * 1000L).toInt())
+            state = state.copy(requestedBitrateKbps = next)
+            publishState()
+            if (kotlin.math.abs(deltaKbps) >= 1_000) stream.requestKeyframe()
+            true
+        }.getOrElse {
+            Log.e(TAG, "Live bitrate adjustment failed", it)
+            updateMessage("Bitrate change failed")
+            false
+        }
+    }
+
     fun stopStream() {
         userStopping = true
 
@@ -906,7 +717,6 @@ class StreamingService : Service(), ConnectChecker {
             isStreaming = false,
         )
 
-        hideFloatingPreview()
         updateMessage(
             "Stream stopped",
         )
@@ -1012,7 +822,6 @@ class StreamingService : Service(), ConnectChecker {
     }
 
     private fun publishState() {
-        updateFloatingOverlay()
         val snapshot = state
 
         mainHandler.post {
@@ -1061,15 +870,12 @@ class StreamingService : Service(), ConnectChecker {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         // Swiping the app away is an explicit emergency stop.
-        hideFloatingPreview()
         stopStream()
         stopSelf()
         super.onTaskRemoved(rootIntent)
     }
 
     override fun onDestroy() {
-        mainHandler.removeCallbacks(showFloatingRunnable)
-        hideFloatingPreview()
         userStopping = true
 
         cancelRetry()
@@ -1100,13 +906,6 @@ class StreamingService : Service(), ConnectChecker {
             stream.release()
         }
         releaseCellularHold()
-        floatingPreview?.let { root -> runCatching { windowManager.removeView(root) } }
-        floatingPreview = null
-        floatingSurfaceView = null
-        floatingSurface = null
-        floatingStatus = null
-        floatingNetwork = null
-        floatingNano = null
 
         wakeLock
             ?.takeIf { it.isHeld }
