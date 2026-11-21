@@ -14,36 +14,63 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Check patch ZIP
+      - name: Find and check patch ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f \
-            BIG-IRL-APP-V2-floating-preview-compile-cellular-fix.zip
+          mapfile -t PATCH_FILES < <(
+            find . \
+              -maxdepth 1 \
+              -type f \
+              -name 'BIG-IRL-APP-V2-floating-preview-compile-cellular-fix*.zip' \
+              -print
+          )
 
-          unzip -t \
-            BIG-IRL-APP-V2-floating-preview-compile-cellular-fix.zip
+          if [[ "${#PATCH_FILES[@]}" -eq 0 ]]; then
+            echo "FAIL: floating preview fix ZIP not found"
+            exit 1
+          fi
+
+          if [[ "${#PATCH_FILES[@]}" -gt 1 ]]; then
+            echo "FAIL: more than one matching patch ZIP exists"
+            printf '%s\n' "${PATCH_FILES[@]}"
+            exit 1
+          fi
+
+          PATCH_ZIP="${PATCH_FILES[0]}"
+
+          echo "Patch found: $PATCH_ZIP"
+
+          unzip -t "$PATCH_ZIP"
+
+          printf '%s' "$PATCH_ZIP" \
+            > /tmp/floating-preview-patch-path.txt
 
       - name: Apply patch
         shell: bash
         run: |
           set -euo pipefail
 
+          PATCH_ZIP="$(
+            cat /tmp/floating-preview-patch-path.txt
+          )"
+
           rm -rf floating-compile-cellular-fix
           mkdir floating-compile-cellular-fix
 
           unzip -q \
-            BIG-IRL-APP-V2-floating-preview-compile-cellular-fix.zip \
+            "$PATCH_ZIP" \
             -d floating-compile-cellular-fix
+
+          test -f \
+            floating-compile-cellular-fix/apply_floating_compile_cellular_patch.py
 
           python3 \
             floating-compile-cellular-fix/apply_floating_compile_cellular_patch.py
 
           rm -rf floating-compile-cellular-fix
-
-          rm -f \
-            BIG-IRL-APP-V2-floating-preview-compile-cellular-fix.zip
+          rm -f "$PATCH_ZIP"
 
       - name: Verify patch
         shell: bash
@@ -69,11 +96,15 @@ jobs:
             'TRANSPORT_CELLULAR' \
             "$SERVICE"
 
+          grep -F \
+            'FLAG_NOT_TOUCHABLE' \
+            "$SERVICE"
+
           if grep -Fq \
             'stream.removePreviewSurface' \
             "$SERVICE"; then
-              echo "FAIL: unsupported removePreviewSurface call remains"
-              exit 1
+            echo "FAIL: unsupported removePreviewSurface call remains"
+            exit 1
           fi
 
           echo "PASS: floating preview compile and cellular fix verified"
@@ -95,6 +126,6 @@ jobs:
           fi
 
           git commit -m \
-            "Fix floating preview and request cellular while streaming"
+            "Fix floating preview and stream-scoped cellular request"
 
           git push
