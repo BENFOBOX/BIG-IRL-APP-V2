@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 
 import argparse
+import io
 import os
 import shutil
 import subprocess
+import tarfile
+import urllib.request
 from pathlib import Path
 
 
 LIBRIST_REVISION = "4f45ef8f78983892d52ccd52d9f675435b23738f"
-LIBRIST_TAG = "v0.2.20"
 SRT_REVISION = "09f35c0f1743e23f514cb41444504a7faeacf89e"
-SRT_TAG = "v1.5.3"
 ABI = "arm64-v8a"
 ANDROID_API = 26
 SRTLA_TARGET = "aarch64-linux-android"
@@ -18,6 +19,21 @@ SRTLA_TARGET = "aarch64-linux-android"
 
 def run(command, cwd=None, env=None):
     subprocess.run(command, cwd=cwd, env=env, check=True)
+
+
+def download_source(url, destination):
+    destination.mkdir(parents=True, exist_ok=True)
+    with urllib.request.urlopen(url, timeout=60) as response:
+        archive_data = response.read()
+    with tarfile.open(fileobj=io.BytesIO(archive_data), mode="r:gz") as archive:
+        archive.extractall(destination, filter="data")
+    roots = [path for path in destination.iterdir()]
+    if len(roots) != 1 or not roots[0].is_dir():
+        raise RuntimeError(f"Unexpected source archive layout from {url}")
+    source = roots[0]
+    for path in source.iterdir():
+        shutil.move(str(path), destination / path.name)
+    source.rmdir()
 
 
 def main():
@@ -42,18 +58,13 @@ def main():
     (staged_source / "subprojects").mkdir(exist_ok=True)
     librist_source.parent.mkdir(parents=True, exist_ok=True)
 
-    if librist_source.exists() and not (librist_source / ".git").exists():
+    if librist_source.exists():
         shutil.rmtree(librist_source)
-    if not (librist_source / ".git").exists():
-        run([
-            "git", "clone", "--filter=blob:none", "--depth", "1",
-            "--branch", LIBRIST_TAG,
-            "https://github.com/rist/librist.git", str(librist_source),
-        ])
-    if subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=librist_source, text=True
-    ).strip() != LIBRIST_REVISION:
-        raise RuntimeError(f"libRIST {LIBRIST_TAG} does not match pinned revision")
+    download_source(
+        "https://code.videolan.org/api/v4/projects/rist%2Flibrist/"
+        f"repository/archive.tar.gz?sha={LIBRIST_REVISION}",
+        librist_source,
+    )
 
     shutil.copy2(project_source / "meson.build", staged_source / "meson.build")
     shutil.copy2(project_source / "native_rist_sender.c", staged_source / "native_rist_sender.c")
@@ -62,14 +73,34 @@ def main():
     clang = ndk_bin / f"aarch64-linux-android{ANDROID_API}-clang"
     archiver = ndk_bin / "llvm-ar"
     stripper = ndk_bin / "llvm-strip"
-    srtla_source = project_source.parent / "rust" / "srtla-android"
     cargo_target = build_root / "cargo"
     cargo_env = os.environ.copy()
     cargo_env["CARGO_TARGET_DIR"] = str(cargo_target)
     cargo_env["CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"] = str(clang)
     cargo_env["CARGO_TARGET_AARCH64_LINUX_ANDROID_AR"] = str(archiver)
+    srtla_source = build_root / "srtla-send-source"
+    if srtla_source.exists():
+        shutil.rmtree(srtla_source)
+    download_source(
+        "https://codeload.github.com/irlserver/srtla_send/tar.gz/"
+        "8677bb49f6af925cb14a3059af5af9f7dc0eb664",
+        srtla_source,
+    )
+    cargo_config = build_root / "cargo-source-overrides.toml"
+    cargo_config.write_text(
+        "\n".join(
+            [
+                '[patch."https://github.com/irlserver/srtla_send.git"]',
+                f'srtla_send = {{ path = "{srtla_source}" }}',
+                f'srtla-core = {{ path = "{srtla_source / "crates" / "srtla-core"}" }}',
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     run([
         "cargo", "build",
+        "--config", str(cargo_config),
         "--manifest-path", str(srtla_source / "Cargo.toml"),
         "--target", SRTLA_TARGET,
         "--release",
@@ -120,15 +151,10 @@ def main():
 
     if srt_source.exists():
         shutil.rmtree(srt_source)
-    run([
-        "git", "clone", "--filter=blob:none", "--depth", "1",
-        "--branch", SRT_TAG,
-        "https://github.com/Haivision/srt.git", str(srt_source),
-    ])
-    if subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=srt_source, text=True
-    ).strip() != SRT_REVISION:
-        raise RuntimeError(f"SRT {SRT_TAG} does not match pinned revision")
+    download_source(
+        f"https://codeload.github.com/Haivision/srt/tar.gz/{SRT_REVISION}",
+        srt_source,
+    )
 
     run([
         "python3",
