@@ -15,38 +15,143 @@ jobs:
       - name: Check out selected branch
         uses: actions/checkout@v4
 
-      - name: Verify branch and patch ZIP
+      - name: Verify branch and find patch ZIP
         shell: bash
         run: |
           set -euo pipefail
 
-          test "$GITHUB_REF_NAME" = "feature/srtla-rist-ab-test"
+          if [[ "$GITHUB_REF_NAME" != "feature/srtla-rist-ab-test" ]]; then
+            echo "FAIL: wrong branch: $GITHUB_REF_NAME"
+            exit 1
+          fi
 
-          test -f \
-            BIG-IRL-APP-V2-rist-diagnostic-files.zip
+          mapfile -t PATCH_FILES < <(
+            find . \
+              -maxdepth 1 \
+              -type f \
+              -name 'BIG-IRL-APP-V2-rist-diagnostic-patch*.zip' \
+              -print
+          )
 
-          unzip -t \
-            BIG-IRL-APP-V2-rist-diagnostic-files.zip
+          if [[ "${#PATCH_FILES[@]}" -eq 0 ]]; then
+            echo "FAIL: RIST diagnostic patch ZIP not found."
+            echo "Expected a filename beginning with:"
+            echo "BIG-IRL-APP-V2-rist-diagnostic-patch"
+            exit 1
+          fi
 
-      - name: Apply patch
+          if [[ "${#PATCH_FILES[@]}" -gt 1 ]]; then
+            echo "FAIL: more than one matching patch ZIP exists:"
+            printf '%s\n' "${PATCH_FILES[@]}"
+            exit 1
+          fi
+
+          PATCH_ZIP="${PATCH_FILES[0]}"
+
+          echo "Patch found: $PATCH_ZIP"
+
+          unzip -t "$PATCH_ZIP"
+
+          printf '%s' "$PATCH_ZIP" \
+            > /tmp/rist-diagnostic-patch-path.txt
+
+      - name: Extract and inspect patch
         shell: bash
         run: |
           set -euo pipefail
+
+          PATCH_ZIP="$(
+            cat /tmp/rist-diagnostic-patch-path.txt
+          )"
 
           rm -rf /tmp/rist-diagnostic-patch
           mkdir -p /tmp/rist-diagnostic-patch
 
           unzip -q \
-            BIG-IRL-APP-V2-rist-diagnostic-files.zip \
+            "$PATCH_ZIP" \
             -d /tmp/rist-diagnostic-patch
 
-          python3 \
-            /tmp/rist-diagnostic-patch/apply_rist_diagnostic_patch.py
+          PATCH_ROOT="$(
+            find /tmp/rist-diagnostic-patch \
+              -mindepth 1 \
+              -maxdepth 1 \
+              -type d \
+              -name 'BIG-IRL-APP-V2-*' \
+              -print \
+              -quit
+          )"
 
-          rm -f \
-            BIG-IRL-APP-V2-rist-diagnostic-files.zip
+          if [[ -z "$PATCH_ROOT" ]]; then
+            echo "FAIL: patched project folder not found inside ZIP."
+            find /tmp/rist-diagnostic-patch \
+              -maxdepth 2 \
+              -print
+            exit 1
+          fi
 
-      - name: Verify patch
+          echo "Patch project root: $PATCH_ROOT"
+
+          test -f \
+            "$PATCH_ROOT/app/src/main/java/uk/co/bigirl/sender/RistDiagnostics.kt"
+
+          test -f \
+            "$PATCH_ROOT/app/src/main/java/uk/co/bigirl/sender/RistSender.kt"
+
+          test -f \
+            "$PATCH_ROOT/app/src/main/java/uk/co/bigirl/sender/StreamingService.kt"
+
+          test -f \
+            "$PATCH_ROOT/app/src/main/java/uk/co/bigirl/sender/MainActivity.kt"
+
+          test -f \
+            "$PATCH_ROOT/app/src/main/cpp/native_rist_sender.c"
+
+          printf '%s' "$PATCH_ROOT" \
+            > /tmp/rist-diagnostic-project-root.txt
+
+      - name: Apply only the diagnostic files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PATCH_ROOT="$(
+            cat /tmp/rist-diagnostic-project-root.txt
+          )"
+
+          install -D -m 0644 \
+            "$PATCH_ROOT/app/src/main/java/uk/co/bigirl/sender/RistDiagnostics.kt" \
+            app/src/main/java/uk/co/bigirl/sender/RistDiagnostics.kt
+
+          install -D -m 0644 \
+            "$PATCH_ROOT/app/src/main/java/uk/co/bigirl/sender/RistSender.kt" \
+            app/src/main/java/uk/co/bigirl/sender/RistSender.kt
+
+          install -D -m 0644 \
+            "$PATCH_ROOT/app/src/main/java/uk/co/bigirl/sender/StreamingService.kt" \
+            app/src/main/java/uk/co/bigirl/sender/StreamingService.kt
+
+          install -D -m 0644 \
+            "$PATCH_ROOT/app/src/main/java/uk/co/bigirl/sender/MainActivity.kt" \
+            app/src/main/java/uk/co/bigirl/sender/MainActivity.kt
+
+          install -D -m 0644 \
+            "$PATCH_ROOT/app/src/main/cpp/native_rist_sender.c" \
+            app/src/main/cpp/native_rist_sender.c
+
+          if [[ -f "$PATCH_ROOT/docs/WORKLOG.md" ]]; then
+            install -D -m 0644 \
+              "$PATCH_ROOT/docs/WORKLOG.md" \
+              docs/WORKLOG.md
+          fi
+
+          PATCH_ZIP="$(
+            cat /tmp/rist-diagnostic-patch-path.txt
+          )"
+
+          rm -f "$PATCH_ZIP"
+          rm -rf /tmp/rist-diagnostic-patch
+
+      - name: Verify applied source
         shell: bash
         run: |
           set -euo pipefail
@@ -63,12 +168,31 @@ jobs:
             app/src/main/java/uk/co/bigirl/sender/RistSender.kt
 
           grep -F \
+            'fun ristDiagnosticReport()' \
+            app/src/main/java/uk/co/bigirl/sender/StreamingService.kt
+
+          grep -F \
             'Java_uk_co_bigirl_sender_RistNative_diagnosticNative' \
             app/src/main/cpp/native_rist_sender.c
 
           grep -F \
-            'fun ristDiagnosticReport()' \
-            app/src/main/java/uk/co/bigirl/sender/StreamingService.kt
+            'DIAGNOSTIC_CAPACITY' \
+            app/src/main/cpp/native_rist_sender.c
+
+          echo "RIST diagnostic patch verification passed."
+
+      - name: Show changed files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git status --short
+          git diff --stat
+
+          if git diff --quiet; then
+            echo "FAIL: patch produced no source changes."
+            exit 1
+          fi
 
       - name: Commit and push
         shell: bash
