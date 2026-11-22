@@ -103,7 +103,7 @@ def main():
     run([
         "cargo", "build",
         "--config", str(cargo_config),
-        "--manifest-path", str(srtla_source / "Cargo.toml"),
+        "--manifest-path", str(project_source.parent / "rust" / "srtla-android" / "Cargo.toml"),
         "--target", SRTLA_TARGET,
         "--release",
     ], env=cargo_env)
