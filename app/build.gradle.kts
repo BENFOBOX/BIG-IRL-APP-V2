@@ -53,16 +53,21 @@ dependencies {
     testImplementation("junit:junit:4.13.2")
 }
 
-val buildLibristForAndroid by tasks.registering(Exec::class) {
+val buildNativeTransportsForAndroid by tasks.registering(Exec::class) {
     val nativeSource = layout.projectDirectory.dir("src/main/cpp")
-    val nativeBuild = layout.buildDirectory.dir("librist-android")
+    val nativeBuild = layout.buildDirectory.dir("native-transports-android")
     val nativeOutput = layout.buildDirectory.dir("generated/jniLibs")
     val ndkHome = providers.environmentVariable("ANDROID_NDK_HOME")
 
     inputs.files(
         nativeSource.file("meson.build"),
         nativeSource.file("native_rist_sender.c"),
-        layout.projectDirectory.file("scripts/build-librist-android.py"),
+        nativeSource.file("native_srt_bonded_sender.c"),
+        nativeSource.file("native_srtla_bridge.c"),
+        nativeSource.file("srt-android/CMakeLists.txt"),
+        layout.projectDirectory.dir("src/main/rust/srtla-android"),
+        layout.projectDirectory.file("scripts/build-native-android.py"),
+        layout.projectDirectory.file("scripts/patch-srt-android.py"),
     )
     outputs.dir(nativeOutput)
     doFirst {
@@ -70,7 +75,7 @@ val buildLibristForAndroid by tasks.registering(Exec::class) {
             ?: error("ANDROID_NDK_HOME must point to Android NDK 27.2.12479018")
         commandLine(
             "python3",
-            layout.projectDirectory.file("scripts/build-librist-android.py").asFile.absolutePath,
+            layout.projectDirectory.file("scripts/build-native-android.py").asFile.absolutePath,
             "--ndk",
             ndk,
             "--source",
@@ -84,5 +89,5 @@ val buildLibristForAndroid by tasks.registering(Exec::class) {
 }
 
 tasks.named("preBuild").configure {
-    dependsOn(buildLibristForAndroid)
+    dependsOn(buildNativeTransportsForAndroid)
 }

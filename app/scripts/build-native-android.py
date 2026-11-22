@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -8,12 +9,15 @@ from pathlib import Path
 
 LIBRIST_REVISION = "4f45ef8f78983892d52ccd52d9f675435b23738f"
 LIBRIST_TAG = "v0.2.20"
+SRT_REVISION = "09f35c0f1743e23f514cb41444504a7faeacf89e"
+SRT_TAG = "v1.5.3"
 ABI = "arm64-v8a"
 ANDROID_API = 26
+SRTLA_TARGET = "aarch64-linux-android"
 
 
-def run(command, cwd=None):
-    subprocess.run(command, cwd=cwd, check=True)
+def run(command, cwd=None, env=None):
+    subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
 def main():
@@ -30,6 +34,8 @@ def main():
     staged_source = build_root / "rist-source"
     librist_source = staged_source / "subprojects" / "librist"
     meson_build = build_root / f"meson-{ABI}"
+    srt_source = build_root / "srt-source"
+    srt_build = build_root / f"srt-cmake-{ABI}"
     output = args.output.resolve() / ABI
 
     staged_source.mkdir(parents=True, exist_ok=True)
@@ -56,6 +62,22 @@ def main():
     clang = ndk_bin / f"aarch64-linux-android{ANDROID_API}-clang"
     archiver = ndk_bin / "llvm-ar"
     stripper = ndk_bin / "llvm-strip"
+    srtla_source = project_source.parent / "rust" / "srtla-android"
+    cargo_target = build_root / "cargo"
+    cargo_env = os.environ.copy()
+    cargo_env["CARGO_TARGET_DIR"] = str(cargo_target)
+    cargo_env["CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"] = str(clang)
+    cargo_env["CARGO_TARGET_AARCH64_LINUX_ANDROID_AR"] = str(archiver)
+    run([
+        "cargo", "build",
+        "--manifest-path", str(srtla_source / "Cargo.toml"),
+        "--target", SRTLA_TARGET,
+        "--release",
+    ], env=cargo_env)
+    srtla_library = cargo_target / SRTLA_TARGET / "release" / "libsrtla_android.so"
+    if not srtla_library.is_file():
+        raise RuntimeError(f"SRTLA Android library was not built: {srtla_library}")
+
     cross_file = build_root / f"android-{ABI}.ini"
     cross_file.write_text(
         "\n".join(
@@ -96,6 +118,44 @@ def main():
     output.mkdir(parents=True, exist_ok=True)
     shutil.copy2(meson_build / "libbigirl_transport.so", output / "libbigirl_transport.so")
 
+    if srt_source.exists():
+        shutil.rmtree(srt_source)
+    run([
+        "git", "clone", "--filter=blob:none", "--depth", "1",
+        "--branch", SRT_TAG,
+        "https://github.com/Haivision/srt.git", str(srt_source),
+    ])
+    if subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=srt_source, text=True
+    ).strip() != SRT_REVISION:
+        raise RuntimeError(f"SRT {SRT_TAG} does not match pinned revision")
+
+    run([
+        "python3",
+        str(project_source.parent.parent.parent / "scripts" / "patch-srt-android.py"),
+        "--source",
+        str(srt_source),
+    ])
+    if srt_build.exists():
+        shutil.rmtree(srt_build)
+    run([
+        "cmake",
+        "-S", str(project_source / "srt-android"),
+        "-B", str(srt_build),
+        f"-DCMAKE_TOOLCHAIN_FILE={ndk / 'build' / 'cmake' / 'android.toolchain.cmake'}",
+        f"-DANDROID_ABI={ABI}",
+        f"-DANDROID_PLATFORM=android-{ANDROID_API}",
+        "-DANDROID_STL=c++_static",
+        "-DCMAKE_BUILD_TYPE=Release",
+        f"-DSRT_SOURCE_DIR={srt_source}",
+        f"-DSRTLA_LIBRARY={srtla_library}",
+    ])
+    run(["cmake", "--build", str(srt_build), "--target", "bigirl_srt_transport", "--parallel"])
+    shutil.copy2(
+        srt_build / "libbigirl_srt_transport.so",
+        output / "libbigirl_srt_transport.so",
+    )
+    shutil.copy2(srtla_library, output / "libsrtla_android.so")
 
 if __name__ == "__main__":
     main()

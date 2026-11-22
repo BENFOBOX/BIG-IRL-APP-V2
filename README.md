@@ -5,12 +5,14 @@ Clean SRT-first Android contribution sender for the Find X9 Pro and the Jetson N
 ## Current app
 
 1. Camera and microphone are owned by an Android foreground service.
-2. One H.264/AAC encoder pipeline supports selectable Single SRT and RIST senders. The saved default profile is 1080p60 at 8 Mbps video.
-3. Single SRT uses the StreamBox public IPv6 listener on UDP `10020`; with Wi-Fi off, the app requests cellular availability and Android routes this single connection over its default cellular network.
-4. RIST uses the StreamBox receiver on UDP `11000` and binds its UDP sockets to the requested cellular network when available.
-5. Switching away from the app must not stop the stream.
+2. One H.264/AAC encoder pipeline supports Single SRT, SRT redundancy, SRTLA bonding, single-path RIST, and RIST Main multipath. The saved default profile is 1080p60 at 8 Mbps video.
+3. Single SRT uses the StreamBox public IPv6 listener on UDP `10020`; the app requests cellular availability and leaves routing to Android's default network.
+4. Native SRT broadcast uses UDP `10010` (Wi-Fi) and `10011` (cellular), with each group socket bound to its Android `Network`. It duplicates packets for redundancy; it does not aggregate bandwidth.
+5. SRTLA sends one local SRT stream through the pinned Rust sender and binds its uplinks to Android Wi-Fi and cellular networks. The Nano needs the compatible `srtla_rec` service on UDP `10012`; install it with `sudo bash streambox/install-srtla-receiver.sh`. Allow inbound UDP `10012` through any host/network firewall.
+6. Single-path RIST uses UDP `11000` over cellular. RIST Main multipath uses the available Wi-Fi and/or cellular paths and reports connected paths; receiver-side merge compatibility remains unverified.
+7. Switching away from the app must not stop the stream.
 
-The app's native SRT bonding sender is not implemented yet; the bonded listener on UDP `10010/10011` is not a valid endpoint for the Single SRT mode. The planned comparison is Single SRT, native SRT bonding, and RIST, with SRTLA deferred.
+The native SRT, SRTLA, and RIST paths still need CI builds and on-device receive tests. The receiver install script has not been run, and no Nano configuration has been changed. SRTLA status distinguishes the local SRT connection from active receiver links.
 
 ## StreamBox test listener
 

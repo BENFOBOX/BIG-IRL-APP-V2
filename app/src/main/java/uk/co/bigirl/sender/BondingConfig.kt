@@ -3,8 +3,7 @@ package uk.co.bigirl.sender
 /**
  * Network-side configuration for the StreamBox bonded receiver.
  *
- * This deliberately does not claim that RootEncoder's single SRT client is bonded.
- * The native sender must create an SRT broadcast group with one member per Android Network.
+ * The native sender opens a broadcast-group member for each Android Network.
  */
 data class BondingConfig(
     val host: String = "145.40.153.191",
@@ -22,4 +21,22 @@ data class BondingConfig(
 
     val wifiEndpoint: String get() = "srt://$host:$wifiPort/$streamId"
     val cellularEndpoint: String get() = "srt://$host:$cellularPort/$streamId"
+    val endpoint: String get() = "srt-bond://$host:$wifiPort,$cellularPort/$streamId"
+
+    companion object {
+        private val ENDPOINT_PATTERN =
+            Regex("""^srt-bond://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+):(\d+),(\d+)/([^/?#]+)$""")
+
+        fun parseEndpoint(endpoint: String): BondingConfig? {
+            val match = ENDPOINT_PATTERN.matchEntire(endpoint.trim()) ?: return null
+            return runCatching {
+                BondingConfig(
+                    host = match.groupValues[1],
+                    wifiPort = match.groupValues[2].toInt(),
+                    cellularPort = match.groupValues[3].toInt(),
+                    streamId = match.groupValues[4],
+                )
+            }.getOrNull()
+        }
+    }
 }

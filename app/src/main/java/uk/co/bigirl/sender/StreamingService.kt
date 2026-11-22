@@ -16,6 +16,7 @@ import android.util.Log
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
+import android.os.SystemClock
 import android.view.SurfaceView
 import androidx.core.app.NotificationCompat
 import com.pedro.common.ConnectChecker
@@ -23,12 +24,63 @@ import com.pedro.encoder.input.sources.video.Camera2Source
 import com.pedro.encoder.utils.gl.AspectRatioMode
 import com.pedro.library.base.StreamBase
 import com.pedro.library.generic.GenericStream
+import java.net.Inet4Address
 import java.util.concurrent.CopyOnWriteArraySet
 
 class StreamingService : Service(), ConnectChecker {
 
     interface Listener {
         fun onStreamState(state: StreamState)
+    }
+
+    private fun updateBondedLinkCount(count: Int) {
+        mainHandler.post {
+            if (state.transportMode != TransportMode.BONDED_SRT) return@post
+            state = state.copy(bondedLinksConnected = count.coerceIn(0, 2))
+            if (state.isStreaming && count > 0) {
+                updateMessage("Live over Bonded SRT | ${state.bondedLinksConnected}/2 links")
+            } else {
+                publishState()
+            }
+        }
+    }
+
+    private fun updateRistLinkCount(count: Int) {
+        mainHandler.post {
+            if (state.transportMode !in setOf(TransportMode.RIST, TransportMode.RIST_MULTIPATH)) {
+                return@post
+            }
+            if (!state.wantsStreaming) return@post
+            val maxLinks = if (state.transportMode == TransportMode.RIST_MULTIPATH) 2 else 1
+            state = state.copy(ristLinksConnected = count.coerceIn(0, maxLinks))
+            if (state.isStreaming && count > 0) {
+                updateMessage("Live over RIST | ${state.ristLinksConnected}/$maxLinks links")
+            } else {
+                publishState()
+            }
+        }
+    }
+
+    private fun updateSrtlaLinkCount(count: Int, total: Int) {
+        mainHandler.post {
+            if (state.transportMode != TransportMode.SRTLA || !state.wantsStreaming) return@post
+            val previousCount = state.srtlaLinksConnected
+            val previousTotal = state.srtlaLinksTotal
+            state = state.copy(
+                srtlaLinksConnected = count.coerceIn(0, total),
+                srtlaLinksTotal = total,
+            )
+            if (
+                state.isStreaming &&
+                (previousCount != state.srtlaLinksConnected || previousTotal != total)
+            ) {
+                updateMessage(
+                    "SRTLA | ${state.srtlaLinksConnected}/${state.srtlaLinksTotal} receiver links",
+                )
+            } else {
+                publishState()
+            }
+        }
     }
 
     data class StreamState(
@@ -42,6 +94,10 @@ class StreamingService : Service(), ConnectChecker {
         val endpoint: String = "",
         val profile: StreamProfile = StreamProfile.MAXIMUM_1080P60,
         val transportMode: TransportMode = TransportMode.SINGLE_SRT,
+        val bondedLinksConnected: Int = 0,
+        val ristLinksConnected: Int = 0,
+        val srtlaLinksConnected: Int = 0,
+        val srtlaLinksTotal: Int = 0,
         val torchEnabled: Boolean = false,
     )
 
@@ -53,6 +109,8 @@ class StreamingService : Service(), ConnectChecker {
         private const val TAG = "BIG_IRL_V2"
         private const val CHANNEL_ID = "big_irl_streaming"
         private const val NOTIFICATION_ID = 1001
+        private const val SRTLA_POLL_INTERVAL_MS = 500L
+        private const val SRTLA_LINK_TIMEOUT_MS = 15_000L
         const val ACTION_KILL_STREAM = "uk.co.bigirl.sender.KILL_STREAM"
 
         private val RETRY_DELAYS_MS =
@@ -78,6 +136,10 @@ class StreamingService : Service(), ConnectChecker {
     }
     private var cellularNetwork: Network? = null
     private var cellularRequestActive = false
+    private var wifiNetwork: Network? = null
+    private var wifiRequestActive = false
+    private var srtlaProxy: SrtlaProxy? = null
+    private var srtlaPoll: Runnable? = null
     private val cellularCallback = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
             mainHandler.post {
@@ -100,8 +162,42 @@ class StreamingService : Service(), ConnectChecker {
                 if (cellularNetwork != network) return@post
                 cellularNetwork = null
                 if (state.wantsStreaming) {
-                    if (stream.isStreaming) stream.stopStream()
-                    updateMessage("SIM lost; waiting for cellular network")
+                    reconnectForNetworkChange("SIM lost")
+                }
+            }
+        }
+    }
+
+    private val wifiCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            mainHandler.post {
+                wifiNetwork = network
+                if (
+                    state.wantsStreaming &&
+                    state.transportMode in setOf(
+                        TransportMode.BONDED_SRT,
+                        TransportMode.SRTLA,
+                        TransportMode.RIST_MULTIPATH,
+                    )
+                ) {
+                    connectNow()
+                }
+            }
+        }
+
+        override fun onLost(network: Network) {
+            mainHandler.post {
+                if (wifiNetwork != network) return@post
+                wifiNetwork = null
+                if (
+                    state.wantsStreaming &&
+                    state.transportMode in setOf(
+                        TransportMode.BONDED_SRT,
+                        TransportMode.SRTLA,
+                        TransportMode.RIST_MULTIPATH,
+                    )
+                ) {
+                    reconnectForNetworkChange("Wi-Fi lost")
                 }
             }
         }
@@ -117,9 +213,27 @@ class StreamingService : Service(), ConnectChecker {
     private fun createStream(mode: TransportMode) {
         stream = when (mode) {
             TransportMode.SINGLE_SRT -> GenericStream(applicationContext, this)
-            TransportMode.RIST -> RistStream(applicationContext, this) {
-                cellularNetwork?.networkHandle
-            }
+            TransportMode.RIST -> RistStream(
+                applicationContext,
+                this,
+                { Pair(null, cellularNetwork?.networkHandle) },
+                multipath = false,
+                onLinkCountChanged = ::updateRistLinkCount,
+            )
+            TransportMode.RIST_MULTIPATH -> RistStream(
+                applicationContext,
+                this,
+                { Pair(wifiNetwork?.networkHandle, cellularNetwork?.networkHandle) },
+                multipath = true,
+                onLinkCountChanged = ::updateRistLinkCount,
+            )
+            TransportMode.SRTLA -> GenericStream(applicationContext, this)
+            TransportMode.BONDED_SRT -> SrtBondedStream(
+                applicationContext,
+                this,
+                { Pair(wifiNetwork?.networkHandle, cellularNetwork?.networkHandle) },
+                ::updateBondedLinkCount,
+            )
         }.apply {
             getGlInterface().autoHandleOrientation = true
             getGlInterface().setAspectRatioMode(
@@ -183,6 +297,71 @@ class StreamingService : Service(), ConnectChecker {
         cellularRequestActive = false
         cellularNetwork = null
     }
+
+    private fun holdNetworksWhileStreaming(mode: TransportMode): Boolean {
+        if (!holdCellularWhileStreaming()) return false
+        if (
+            mode !in setOf(
+                TransportMode.BONDED_SRT,
+                TransportMode.SRTLA,
+                TransportMode.RIST_MULTIPATH,
+            ) ||
+            wifiRequestActive
+        ) return true
+
+        val request = android.net.NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .build()
+        return runCatching {
+            connectivityManager.registerNetworkCallback(request, wifiCallback)
+            wifiRequestActive = true
+            true
+        }.getOrElse { error ->
+            Log.e(TAG, "Could not observe Wi-Fi network", error)
+            releaseCellularHold()
+            updateMessage("Could not observe Wi-Fi network: ${error.message ?: "unknown error"}")
+            false
+        }
+    }
+
+    private fun releaseWifiHold() {
+        if (!wifiRequestActive) return
+        runCatching { connectivityManager.unregisterNetworkCallback(wifiCallback) }
+        wifiRequestActive = false
+        wifiNetwork = null
+    }
+
+    private fun reconnectForNetworkChange(reason: String) {
+        runCatching {
+            if (stream.isStreaming) stream.stopStream()
+        }.onFailure { error ->
+            Log.w(TAG, "Could not stop transport after network change", error)
+        }
+        stopSrtlaProxy()
+        state = state.copy(
+            isStreaming = false,
+            isReconnecting = true,
+            bitrateKbps = 0,
+            bondedLinksConnected = 0,
+            ristLinksConnected = 0,
+            srtlaLinksConnected = 0,
+            srtlaLinksTotal = 0,
+        )
+        if (hasRequiredNetworks(state.transportMode)) {
+            connectNow()
+        } else {
+            updateMessage("$reason; waiting for a usable network path")
+        }
+    }
+
+    private fun hasRequiredNetworks(mode: TransportMode): Boolean =
+        when (mode) {
+            TransportMode.SINGLE_SRT, TransportMode.RIST -> cellularNetwork != null
+            TransportMode.BONDED_SRT -> cellularNetwork != null && wifiNetwork != null
+            TransportMode.SRTLA, TransportMode.RIST_MULTIPATH ->
+                cellularNetwork != null || wifiNetwork != null
+        }
 
     fun addListener(listener: Listener) {
         listeners += listener
@@ -414,6 +593,7 @@ class StreamingService : Service(), ConnectChecker {
         }.onFailure { error ->
             Log.w(TAG, "Could not stop previous transport", error)
         }
+        stopSrtlaProxy()
         runCatching {
             if (stream.isOnPreview) stream.stopPreview()
         }.onFailure { error ->
@@ -432,6 +612,10 @@ class StreamingService : Service(), ConnectChecker {
             wantsStreaming = false,
             isReconnecting = false,
             bitrateKbps = 0,
+            bondedLinksConnected = 0,
+            ristLinksConnected = 0,
+            srtlaLinksConnected = 0,
+            srtlaLinksTotal = 0,
             torchEnabled = restoreTorch,
         )
         createStream(mode)
@@ -591,24 +775,29 @@ class StreamingService : Service(), ConnectChecker {
                 java.net.URI(clean)
             }.getOrNull()
 
-        val validEndpoint =
-            parsedEndpoint?.scheme.equals(mode.scheme, ignoreCase = true) &&
-                !parsedEndpoint?.host
-                    .isNullOrBlank() &&
-                (
-                    parsedEndpoint?.port
-                        ?: -1
-                    ) in 1..65535 &&
-                when (mode) {
-                    TransportMode.SINGLE_SRT ->
-                        !parsedEndpoint?.path.isNullOrBlank() && parsedEndpoint?.path != "/"
-                    TransportMode.RIST -> true
-                }
+        val validEndpoint = when (mode) {
+            TransportMode.SINGLE_SRT ->
+                parsedEndpoint?.scheme.equals(mode.scheme, ignoreCase = true) &&
+                    !parsedEndpoint?.host.isNullOrBlank() &&
+                    (parsedEndpoint?.port ?: -1) in 1..65535 &&
+                    !parsedEndpoint?.path.isNullOrBlank() &&
+                    parsedEndpoint?.path != "/"
+            TransportMode.RIST, TransportMode.RIST_MULTIPATH ->
+                parsedEndpoint?.scheme.equals(mode.scheme, ignoreCase = true) &&
+                    !parsedEndpoint?.host.isNullOrBlank() &&
+                    (parsedEndpoint?.port ?: -1) in 1..65535
+            TransportMode.BONDED_SRT ->
+                BondingConfig.parseEndpoint(clean) != null
+            TransportMode.SRTLA ->
+                SrtlaConfig.parseEndpoint(clean) != null
+        }
 
         if (!validEndpoint) {
             val example = when (mode) {
                 TransportMode.SINGLE_SRT -> "srt://host:port/streamid"
-                TransportMode.RIST -> "rist://host:port"
+                TransportMode.RIST, TransportMode.RIST_MULTIPATH -> "rist://host:port"
+                TransportMode.BONDED_SRT -> BondingConfig().endpoint
+                TransportMode.SRTLA -> TransportMode.SRTLA.defaultEndpoint
             }
             updateMessage("Use $example (IPv6 must use [brackets])")
             return false
@@ -627,13 +816,17 @@ class StreamingService : Service(), ConnectChecker {
         userStopping = false
         retryIndex = 0
 
-        if (!holdCellularWhileStreaming()) return false
+        if (!holdNetworksWhileStreaming(mode)) return false
         state = state.copy(
             transportMode = mode,
             endpoint = clean,
             wantsStreaming = true,
             isReconnecting = false,
             bitrateKbps = 0,
+            bondedLinksConnected = 0,
+            ristLinksConnected = 0,
+            srtlaLinksConnected = 0,
+            srtlaLinksTotal = 0,
             requestedBitrateKbps = state.profile.videoBitrate / 1000L,
         )
 
@@ -649,14 +842,19 @@ class StreamingService : Service(), ConnectChecker {
             return false
         }
 
-        val network = cellularNetwork
-        if (network == null) {
+        if (!hasRequiredNetworks(state.transportMode)) {
             state = state.copy(
                 isStreaming = false,
                 isReconnecting = true,
                 bitrateKbps = 0,
             )
-            updateMessage("Waiting for SIM network")
+            val reason = when (state.transportMode) {
+                TransportMode.SINGLE_SRT, TransportMode.RIST -> "Waiting for SIM network"
+                TransportMode.BONDED_SRT -> "Waiting for Wi-Fi and SIM networks"
+                TransportMode.SRTLA, TransportMode.RIST_MULTIPATH ->
+                    "Waiting for Wi-Fi or SIM network"
+            }
+            updateMessage(reason)
             return true
         }
         cancelRetry()
@@ -665,14 +863,13 @@ class StreamingService : Service(), ConnectChecker {
             if (stream.isStreaming) {
                 stream.stopStream()
             }
+            stopSrtlaProxy()
 
-            val message =
-                if (retryIndex == 0) {
-                    "Connecting to StreamBox"
-                } else {
-                    "Reconnecting | attempt " +
-                        "${retryIndex + 1}"
-                }
+            val message = if (retryIndex == 0) {
+                "Connecting over ${state.transportMode.label}"
+            } else {
+                "Reconnecting | attempt ${retryIndex + 1}"
+            }
 
             state = state.copy(
                 isStreaming = false,
@@ -684,17 +881,18 @@ class StreamingService : Service(), ConnectChecker {
 
             Log.i(TAG, "Starting ${state.transportMode.label}: ${state.endpoint}")
 
+            val outputEndpoint = if (state.transportMode == TransportMode.SRTLA) {
+                startSrtlaProxy(state.endpoint)
+            } else {
+                state.endpoint
+            }
             stream.startStream(
-                state.endpoint,
+                outputEndpoint,
             )
 
             true
         } catch (error: Throwable) {
-            Log.e(
-                TAG,
-                "SRT start failed",
-                error,
-            )
+            Log.e(TAG, "${state.transportMode.label} start failed", error)
 
             scheduleReconnect(
                 error.message
@@ -703,6 +901,79 @@ class StreamingService : Service(), ConnectChecker {
 
             false
         }
+    }
+
+    private fun startSrtlaProxy(endpoint: String): String {
+        val config = SrtlaConfig.parseEndpoint(endpoint)
+            ?: throw IllegalArgumentException("Invalid SRTLA destination")
+        val wifiIp = wifiNetwork?.let(::networkAddress)
+        val cellularIp = cellularNetwork?.let(::networkAddress)
+        val proxy = SrtlaProxy(
+            applicationContext,
+            config,
+            wifiIp,
+            wifiIp?.let { wifiNetwork?.networkHandle },
+            cellularIp,
+            cellularIp?.let { cellularNetwork?.networkHandle },
+        )
+        state = state.copy(
+            srtlaLinksConnected = 0,
+            srtlaLinksTotal = proxy.uplinkCount,
+        )
+        srtlaProxy = proxy
+        monitorSrtlaProxy(proxy)
+        return config.localSrtEndpoint(proxy.localSrtPort)
+    }
+
+    private fun networkAddress(network: Network): String? =
+        connectivityManager.getLinkProperties(network)
+            ?.linkAddresses
+            ?.map { it.address }
+            ?.filterNot {
+                it.isAnyLocalAddress ||
+                    it.isLoopbackAddress ||
+                    it.isLinkLocalAddress ||
+                    it.isMulticastAddress
+            }
+            ?.sortedByDescending { it is Inet4Address }
+            ?.firstOrNull()
+            ?.hostAddress
+            ?.substringBefore('%')
+
+    private fun monitorSrtlaProxy(proxy: SrtlaProxy) {
+        val startedAt = SystemClock.elapsedRealtime()
+        val poll = object : Runnable {
+            override fun run() {
+                if (srtlaProxy !== proxy || !state.wantsStreaming) return
+                val activeLinks = proxy.activeLinks()
+                updateSrtlaLinkCount(activeLinks, proxy.uplinkCount)
+                if (activeLinks < 0) {
+                    val reason = proxy.error() ?: "SRTLA sender stopped"
+                    stopSrtlaProxy()
+                    onConnectionFailed(reason)
+                    return
+                }
+                if (activeLinks > 0) retryIndex = 0
+                if (
+                    activeLinks == 0 &&
+                    SystemClock.elapsedRealtime() - startedAt >= SRTLA_LINK_TIMEOUT_MS
+                ) {
+                    stopSrtlaProxy()
+                    onConnectionFailed("No SRTLA receiver links became active")
+                    return
+                }
+                mainHandler.postDelayed(this, SRTLA_POLL_INTERVAL_MS)
+            }
+        }
+        srtlaPoll = poll
+        mainHandler.postDelayed(poll, SRTLA_POLL_INTERVAL_MS)
+    }
+
+    private fun stopSrtlaProxy() {
+        srtlaPoll?.let(mainHandler::removeCallbacks)
+        srtlaPoll = null
+        srtlaProxy?.close()
+        srtlaProxy = null
     }
 
     private fun scheduleReconnect(
@@ -781,11 +1052,16 @@ class StreamingService : Service(), ConnectChecker {
 
         cancelRetry()
         releaseCellularHold()
+        releaseWifiHold()
 
         state = state.copy(
             wantsStreaming = false,
             isReconnecting = false,
             bitrateKbps = 0,
+            bondedLinksConnected = 0,
+            ristLinksConnected = 0,
+            srtlaLinksConnected = 0,
+            srtlaLinksTotal = 0,
         )
 
         runCatching {
@@ -799,6 +1075,7 @@ class StreamingService : Service(), ConnectChecker {
                 error,
             )
         }
+        stopSrtlaProxy()
 
         state = state.copy(
             isStreaming = false,
@@ -840,10 +1117,20 @@ class StreamingService : Service(), ConnectChecker {
     }
 
     override fun onConnectionSuccess() {
-        Log.i(TAG, "SRT connected")
-        retryIndex = 0
+        Log.i(TAG, "${state.transportMode.label} connected")
+        if (state.transportMode != TransportMode.SRTLA) retryIndex = 0
         state = state.copy(isStreaming = true, isReconnecting = false)
-        updateMessage("Live over ${state.transportMode.label}")
+        val connectedMessage = if (state.transportMode == TransportMode.BONDED_SRT) {
+            "Live over Bonded SRT | ${state.bondedLinksConnected}/2 links"
+        } else if (state.transportMode in setOf(TransportMode.RIST, TransportMode.RIST_MULTIPATH)) {
+            val maxLinks = if (state.transportMode == TransportMode.RIST_MULTIPATH) 2 else 1
+            "Live over RIST | ${state.ristLinksConnected}/$maxLinks links"
+        } else if (state.transportMode == TransportMode.SRTLA) {
+            "Local SRT connected | SRTLA receiver links ${state.srtlaLinksConnected}/${state.srtlaLinksTotal}"
+        } else {
+            "Live over ${state.transportMode.label}"
+        }
+        updateMessage(connectedMessage)
 
         // Give the receiver a fresh decoder entry point as soon as SRT is established.
         // RootEncoder prepends the current codec configuration when requesting a keyframe.
@@ -866,10 +1153,7 @@ class StreamingService : Service(), ConnectChecker {
                 "connection failed"
             }
 
-        Log.e(
-            TAG,
-            "SRT connection failed: $detail",
-        )
+        Log.e(TAG, "${state.transportMode.label} connection failed: $detail")
 
         state = state.copy(
             isStreaming = false,
@@ -896,10 +1180,22 @@ class StreamingService : Service(), ConnectChecker {
         }
 
         state = state.copy(
-            message =
-                "Sending ${bitrate / 1000} Kbps",
-            isStreaming = true,
-            isReconnecting = false,
+            message = if (state.isStreaming && state.transportMode == TransportMode.BONDED_SRT) {
+                "Bonded SRT | ${state.bondedLinksConnected}/2 links | Sending ${bitrate / 1000} Kbps"
+            } else if (state.isStreaming && state.transportMode == TransportMode.SRTLA) {
+                "SRTLA | ${state.srtlaLinksConnected}/${state.srtlaLinksTotal} receiver links | Sending ${bitrate / 1000} Kbps"
+            } else if (state.isStreaming && state.transportMode in setOf(
+                    TransportMode.RIST,
+                    TransportMode.RIST_MULTIPATH,
+                )
+            ) {
+                val maxLinks = if (state.transportMode == TransportMode.RIST_MULTIPATH) 2 else 1
+                "RIST | ${state.ristLinksConnected}/$maxLinks links | Sending ${bitrate / 1000} Kbps"
+            } else if (state.isStreaming) {
+                "Sending ${bitrate / 1000} Kbps"
+            } else {
+                state.message
+            },
             bitrateKbps = bitrate / 1000,
         )
 
@@ -980,6 +1276,7 @@ class StreamingService : Service(), ConnectChecker {
                 stream.stopStream()
             }
         }
+        stopSrtlaProxy()
 
         runCatching {
             if (stream.isOnPreview) {
@@ -991,6 +1288,7 @@ class StreamingService : Service(), ConnectChecker {
             stream.release()
         }
         releaseCellularHold()
+        releaseWifiHold()
 
         wakeLock
             ?.takeIf { it.isHeld }

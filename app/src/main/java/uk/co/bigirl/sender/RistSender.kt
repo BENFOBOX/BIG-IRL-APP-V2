@@ -2,25 +2,31 @@ package uk.co.bigirl.sender
 
 internal class RistSender(
     endpoint: String,
-    networkHandle: Long,
-    private val onConnectionStatus: (Boolean) -> Unit,
-) : AutoCloseable {
+    wifiNetworkHandle: Long?,
+    cellularNetworkHandle: Long,
+    private val onLinkCountChanged: (Int) -> Unit,
+) : TransportPacketSender {
 
     @Volatile
     private var closed = false
     private var nativeHandle = 0L
 
     init {
-        nativeHandle = RistNative.createNative(endpoint, networkHandle, this)
+        nativeHandle = RistNative.createNative(
+            endpoint,
+            wifiNetworkHandle ?: 0L,
+            cellularNetworkHandle,
+            this,
+        )
         check(nativeHandle != 0L) { "Could not start the native RIST sender" }
     }
 
-    fun onConnectionStatusNative(connected: Boolean) {
-        if (!closed) onConnectionStatus(connected)
+    fun onLinkCountNative(connectedLinks: Int) {
+        if (!closed) onLinkCountChanged(connectedLinks)
     }
 
     @Synchronized
-    fun send(transportStreamPacket: ByteArray) {
+    override fun send(transportStreamPacket: ByteArray) {
         check(nativeHandle != 0L) { "RIST sender is closed" }
         val result = RistNative.sendNative(nativeHandle, transportStreamPacket)
         check(result >= 0) { "RIST rejected a transport-stream packet" }
@@ -43,7 +49,8 @@ private object RistNative {
 
     external fun createNative(
         endpoint: String,
-        networkHandle: Long,
+        wifiNetworkHandle: Long,
+        cellularNetworkHandle: Long,
         callback: RistSender,
     ): Long
 

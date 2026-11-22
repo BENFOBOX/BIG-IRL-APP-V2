@@ -170,6 +170,9 @@ private fun BigIrlV2(service: StreamingService?, pipMode: Boolean) {
                 ?.takeUnless { it == LEGACY_LAN_ENDPOINT }
                 ?: selectedTransport.defaultEndpoint
             TransportMode.RIST -> selectedTransport.defaultEndpoint
+            TransportMode.BONDED_SRT -> selectedTransport.defaultEndpoint
+            TransportMode.SRTLA -> selectedTransport.defaultEndpoint
+            TransportMode.RIST_MULTIPATH -> selectedTransport.defaultEndpoint
         }
         mutableStateOf(initialEndpoint)
     }

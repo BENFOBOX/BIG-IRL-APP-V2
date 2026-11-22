@@ -12,7 +12,7 @@ import com.pedro.srt.mpeg2ts.service.Mpeg2TsService
 import kotlinx.coroutines.runBlocking
 import java.nio.ByteBuffer
 
-internal class RistMpegTsMuxer(
+internal class MpegTsMuxer(
     private val sendPacket: (ByteArray) -> Unit,
 ) {
 

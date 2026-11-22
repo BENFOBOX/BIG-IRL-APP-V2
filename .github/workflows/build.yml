@@ -26,11 +26,16 @@ jobs:
       - name: Set up Android SDK and NDK
         uses: android-actions/setup-android@v3
 
+      - name: Set up Rust for Android
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
       - name: Install Android NDK and Meson
         run: |
           sdkmanager --install "ndk;27.2.12479018"
           sudo apt-get update
-          sudo apt-get install --yes meson ninja-build
+          sudo apt-get install --yes cmake meson ninja-build
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
 
       - name: Set up Gradle

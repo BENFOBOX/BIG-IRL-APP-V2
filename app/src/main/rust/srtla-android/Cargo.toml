@@ -1,0 +1,15 @@
+[package]
+name = "bigirl-srtla-android"
+version = "0.1.0"
+edition = "2024"
+publish = false
+build = "build.rs"
+
+[lib]
+name = "srtla_android"
+crate-type = ["cdylib"]
+
+[dependencies]
+srtla_send = { git = "https://github.com/irlserver/srtla_send.git", rev = "8677bb49f6af925cb14a3059af5af9f7dc0eb664", default-features = false }
+srtla-core = { git = "https://github.com/irlserver/srtla_send.git", rev = "8677bb49f6af925cb14a3059af5af9f7dc0eb664" }
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util"] }

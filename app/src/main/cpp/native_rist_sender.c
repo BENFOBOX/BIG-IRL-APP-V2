@@ -3,24 +3,28 @@
 #include <jni.h>
 #include <librist/librist.h>
 #include <librist/peer.h>
-#include <librist/transport.h>
 #include <errno.h>
-#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
-#include <sys/socket.h>
+#include <string.h>
+#include <pthread.h>
+#include <stdio.h>
 
 #define TAG "BIG_IRL_RIST"
+#define MAX_RIST_PATHS 2
 
 typedef struct {
   struct rist_ctx *context;
   struct rist_logging_settings *logging;
-  struct rist_transport_ops transport;
-  net_handle_t network;
   JavaVM *jvm;
   jobject callback;
   jmethodID callback_method;
+  struct rist_peer *peers[MAX_RIST_PATHS];
+  bool peer_connected[MAX_RIST_PATHS];
+  int peer_count;
+  int reported_link_count;
+  pthread_mutex_t status_mutex;
 } RistSender;
 
 static void log_message(void *opaque, enum rist_log_level level, const char *message) {
@@ -29,49 +33,10 @@ static void log_message(void *opaque, enum rist_log_level level, const char *mes
   __android_log_print(priority, TAG, "%s", message);
 }
 
-static int bind_socket(RistSender *sender, int fd) {
-  if (sender->network == 0) return 0;
-  if (android_setsocknetwork(sender->network, fd) == 0) return 0;
-  __android_log_print(ANDROID_LOG_ERROR, TAG, "Could not bind RIST socket to Android network: errno=%d", errno);
-  return -1;
-}
-
-static ssize_t network_sendto(
-    void *opaque,
-    int fd,
-    const void *buffer,
-    size_t length,
-    int flags,
-    const struct sockaddr *address,
-    socklen_t address_length) {
-  RistSender *sender = opaque;
-  if (bind_socket(sender, fd) != 0) return -1;
-  return sendto(fd, buffer, length, flags, address, address_length);
-}
-
-static ssize_t network_recvfrom(
-    void *opaque,
-    int fd,
-    void *buffer,
-    size_t length,
-    int flags,
-    struct sockaddr *address,
-    socklen_t *address_length) {
-  RistSender *sender = opaque;
-  if (bind_socket(sender, fd) != 0) return -1;
-  return recvfrom(fd, buffer, length, flags, address, address_length);
-}
-
-static int network_poll(void *opaque, struct pollfd *fds, int count, int timeout_ms) {
-  (void)opaque;
-  return poll(fds, (nfds_t)count, timeout_ms);
-}
-
 static void connection_status(
     void *opaque,
     struct rist_peer *peer,
     enum rist_connection_status status) {
-  (void)peer;
   RistSender *sender = opaque;
   JNIEnv *env = NULL;
   bool attached = false;
@@ -84,10 +49,37 @@ static void connection_status(
     return;
   }
 
+  int peer_index = -1;
+  for (int i = 0; i < sender->peer_count; ++i) {
+    if (sender->peers[i] == peer) {
+      peer_index = i;
+      break;
+    }
+  }
+  if (peer_index < 0) {
+    if (attached) (*sender->jvm)->DetachCurrentThread(sender->jvm);
+    return;
+  }
+
+  pthread_mutex_lock(&sender->status_mutex);
   if (status == RIST_CONNECTION_ESTABLISHED || status == RIST_CLIENT_CONNECTED) {
-    (*env)->CallVoidMethod(env, sender->callback, sender->callback_method, JNI_TRUE);
+    sender->peer_connected[peer_index] = true;
   } else if (status == RIST_CONNECTION_TIMED_OUT || status == RIST_CLIENT_TIMED_OUT) {
-    (*env)->CallVoidMethod(env, sender->callback, sender->callback_method, JNI_FALSE);
+    sender->peer_connected[peer_index] = false;
+  }
+
+  int connected_count = 0;
+  for (int i = 0; i < sender->peer_count; ++i) {
+    if (sender->peer_connected[i]) connected_count++;
+  }
+  bool notify = connected_count != sender->reported_link_count;
+  if (notify) {
+    sender->reported_link_count = connected_count;
+  }
+  pthread_mutex_unlock(&sender->status_mutex);
+  if (notify) {
+    (*env)->CallVoidMethod(
+        env, sender->callback, sender->callback_method, (jint)connected_count);
   }
   if ((*env)->ExceptionCheck(env)) {
     __android_log_print(ANDROID_LOG_ERROR, TAG, "RIST connection callback failed");
@@ -106,6 +98,7 @@ static void destroy_sender(RistSender *sender) {
     }
   }
   if (sender->logging != NULL) rist_logging_settings_free2(&sender->logging);
+  pthread_mutex_destroy(&sender->status_mutex);
   free(sender);
 }
 
@@ -114,10 +107,11 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
     JNIEnv *env,
     jobject object,
     jstring endpoint,
-    jlong network_handle,
+    jlong wifi_network_handle,
+    jlong cellular_network_handle,
     jobject callback) {
   (void)object;
-  if (endpoint == NULL) return 0;
+  if (endpoint == NULL || cellular_network_handle == 0) return 0;
 
   const char *endpoint_text = (*env)->GetStringUTFChars(env, endpoint, NULL);
   if (endpoint_text == NULL) return 0;
@@ -127,8 +121,14 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
     (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
     return 0;
   }
-  sender->network = (net_handle_t)network_handle;
+  if (pthread_mutex_init(&sender->status_mutex, NULL) != 0) {
+    free(sender);
+    (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
+    return 0;
+  }
+  sender->reported_link_count = -1;
   if ((*env)->GetJavaVM(env, &sender->jvm) != JNI_OK || callback == NULL) {
+    pthread_mutex_destroy(&sender->status_mutex);
     free(sender);
     (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
     return 0;
@@ -142,7 +142,7 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
     return 0;
   }
   sender->callback_method = (*env)->GetMethodID(
-      env, callback_class, "onConnectionStatusNative", "(Z)V");
+      env, callback_class, "onLinkCountNative", "(I)V");
   (*env)->DeleteLocalRef(env, callback_class);
   if (sender->callback_method == NULL) {
     destroy_sender(sender);
@@ -159,25 +159,54 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
     return 0;
   }
 
-  sender->transport.opaque = sender;
-  sender->transport.sendto = network_sendto;
-  sender->transport.recvfrom = network_recvfrom;
-  sender->transport.poll = network_poll;
-  if (rist_transport_set(sender->context, &sender->transport) != 0) {
-    destroy_sender(sender);
-    (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
-    return 0;
-  }
-
   struct rist_peer_config *peer_config = NULL;
-  struct rist_peer *peer = NULL;
   result = rist_parse_address2(endpoint_text, &peer_config);
   (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
-  if (result != 0 || peer_config == NULL ||
-      rist_peer_create(sender->context, &peer, peer_config) != 0) {
+  if (result < 0 || peer_config == NULL) {
     if (peer_config != NULL) rist_peer_config_free2(&peer_config);
     destroy_sender(sender);
     return 0;
+  }
+
+  const net_handle_t networks[MAX_RIST_PATHS] = {
+      (net_handle_t)wifi_network_handle,
+      (net_handle_t)cellular_network_handle,
+  };
+  const int path_count = wifi_network_handle != 0 ? 2 : 1;
+  const int first_network = path_count == 2 ? 0 : 1;
+  snprintf(
+      peer_config->cname,
+      sizeof(peer_config->cname),
+      "BIG_IRL_%08x",
+      (unsigned int)arc4random());
+  peer_config->weight = 5;
+
+  for (int i = 0; i < path_count; ++i) {
+    struct rist_peer_config path_config = *peer_config;
+    sender->peer_count = i + 1;
+    if (rist_peer_create(
+            sender->context, &sender->peers[i], &path_config) != 0) {
+      rist_peer_config_free2(&peer_config);
+      destroy_sender(sender);
+      return 0;
+    }
+
+    int socket = -1;
+    int socket_extra = -1;
+    if (rist_peer_get_socket(sender->peers[i], &socket, &socket_extra) != 0 ||
+        android_setsocknetwork(networks[first_network + i], socket) != 0 ||
+        (socket_extra >= 0 && socket_extra != socket &&
+         android_setsocknetwork(networks[first_network + i], socket_extra) != 0)) {
+      __android_log_print(
+          ANDROID_LOG_ERROR,
+          TAG,
+          "Could not bind RIST path %d to Android network: errno=%d",
+          i,
+          errno);
+      rist_peer_config_free2(&peer_config);
+      destroy_sender(sender);
+      return 0;
+    }
   }
   rist_peer_config_free2(&peer_config);
 
