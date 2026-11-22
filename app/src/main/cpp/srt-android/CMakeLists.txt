@@ -25,6 +25,9 @@ add_library(bigirl_srt_transport SHARED
   "${CMAKE_CURRENT_LIST_DIR}/../native_srt_bonded_sender.c"
   "${CMAKE_CURRENT_LIST_DIR}/../native_srtla_bridge.c"
 )
-target_include_directories(bigirl_srt_transport PRIVATE "${SRT_SOURCE_DIR}/srtcore")
+target_include_directories(bigirl_srt_transport PRIVATE
+  "${SRT_SOURCE_DIR}/srtcore"
+  "${CMAKE_CURRENT_BINARY_DIR}/srt"
+)
 target_link_libraries(bigirl_srt_transport PRIVATE srt_static srtla_android android log)
 set_target_properties(bigirl_srt_transport PROPERTIES LINKER_LANGUAGE CXX)
