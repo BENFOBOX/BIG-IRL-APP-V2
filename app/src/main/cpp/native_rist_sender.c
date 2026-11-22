@@ -10,9 +10,42 @@
 #include <string.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 #define TAG "BIG_IRL_RIST"
 #define MAX_RIST_PATHS 2
+#define DIAGNOSTIC_CAPACITY 16384
+static char diagnostic_trace[DIAGNOSTIC_CAPACITY];
+static size_t diagnostic_length;
+static pthread_mutex_t diagnostic_mutex = PTHREAD_MUTEX_INITIALIZER;
+static void diagnostic_append(const char *format, ...) {
+  char line[768];
+  va_list args;
+  va_start(args, format);
+  int written = vsnprintf(line, sizeof(line), format, args);
+  va_end(args);
+  if (written < 0) return;
+  size_t length = strnlen(line, sizeof(line) - 1);
+  pthread_mutex_lock(&diagnostic_mutex);
+  if (length + 1 >= DIAGNOSTIC_CAPACITY) {
+    line[DIAGNOSTIC_CAPACITY - 2] = '\0';
+    length = DIAGNOSTIC_CAPACITY - 2;
+  }
+  if (diagnostic_length + length + 1 >= DIAGNOSTIC_CAPACITY) {
+    size_t remove = diagnostic_length + length + 1 - DIAGNOSTIC_CAPACITY;
+    if (remove < diagnostic_length) {
+      memmove(diagnostic_trace, diagnostic_trace + remove, diagnostic_length - remove);
+      diagnostic_length -= remove;
+    } else {
+      diagnostic_length = 0;
+    }
+  }
+  memcpy(diagnostic_trace + diagnostic_length, line, length);
+  diagnostic_length += length;
+  diagnostic_trace[diagnostic_length++] = '\n';
+  diagnostic_trace[diagnostic_length] = '\0';
+  pthread_mutex_unlock(&diagnostic_mutex);
+}
 
 static _Thread_local char last_create_error[256];
 
@@ -33,11 +66,13 @@ static int log_message(void *opaque, enum rist_log_level level, const char *mess
   (void)opaque;
   int priority = level >= RIST_LOG_ERROR ? ANDROID_LOG_ERROR : ANDROID_LOG_WARN;
   __android_log_print(priority, TAG, "%s", message);
+  diagnostic_append("libRIST level=%d | %s", (int)level, message);
   return 0;
 }
 
 static void set_create_error(const char *message) {
   snprintf(last_create_error, sizeof(last_create_error), "%s", message);
+  diagnostic_append("create error | %s", message);
 }
 
 static void connection_status(
@@ -119,6 +154,7 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
     jobject callback) {
   (void)object;
   last_create_error[0] = '\0';
+  diagnostic_append("create begin | wifi=%lld cellular=%lld", (long long)wifi_network_handle, (long long)cellular_network_handle);
   if (endpoint == NULL) {
     set_create_error("RIST endpoint is missing");
     return 0;
@@ -266,6 +302,7 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
     destroy_sender(sender);
     return 0;
   }
+  diagnostic_append("create success | paths=%d", sender->peer_count);
   return (jlong)(intptr_t)sender;
 }
 
@@ -311,4 +348,15 @@ Java_uk_co_bigirl_sender_RistNative_destroyNative(
   (void)env;
   (void)object;
   destroy_sender((RistSender *)(intptr_t)handle);
+}
+
+JNIEXPORT jstring JNICALL
+Java_uk_co_bigirl_sender_RistNative_diagnosticNative(
+    JNIEnv *env,
+    jobject object) {
+  (void)object;
+  pthread_mutex_lock(&diagnostic_mutex);
+  jstring result = (*env)->NewStringUTF(env, diagnostic_trace);
+  pthread_mutex_unlock(&diagnostic_mutex);
+  return result;
 }

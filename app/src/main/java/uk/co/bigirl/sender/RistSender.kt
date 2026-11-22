@@ -43,7 +43,7 @@ internal class RistSender(
     }
 }
 
-private object RistNative {
+internal object RistNative {
 
     init {
         System.loadLibrary("bigirl_transport")
@@ -57,6 +57,7 @@ private object RistNative {
     ): Long
 
     external fun lastCreateErrorNative(): String?
+    external fun diagnosticNative(): String?
 
     external fun sendNative(handle: Long, payload: ByteArray): Int
 

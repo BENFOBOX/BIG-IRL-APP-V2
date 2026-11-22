@@ -3,6 +3,9 @@ package uk.co.bigirl.sender
 import android.Manifest
 import android.content.ComponentName
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
 import android.content.Intent
 import android.content.ServiceConnection
 import android.content.pm.PackageManager
@@ -670,6 +673,19 @@ private fun ControlPanel(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (selectedTransport == TransportMode.RIST || selectedTransport == TransportMode.RIST_MULTIPATH) {
+            val context = LocalContext.current
+            OutlinedButton(
+                modifier = Modifier.fillMaxWidth(),
+                onClick = {
+                    val report = service?.ristDiagnosticReport()
+                        ?: RistDiagnostics.report(context, streamState)
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                    clipboard.setPrimaryClip(ClipData.newPlainText("BIG IRL RIST diagnostic", report))
+                    Toast.makeText(context, "RIST diagnostic copied", Toast.LENGTH_SHORT).show()
+                },
+            ) { Text("COPY RIST DIAGNOSTIC") }
+        }
 
         if (streamState.wantsStreaming) {
             Row(

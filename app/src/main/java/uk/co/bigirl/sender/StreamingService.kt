@@ -205,6 +205,7 @@ class StreamingService : Service(), ConnectChecker {
 
     override fun onCreate() {
         super.onCreate()
+        RistDiagnostics.append(this, "service created")
 
         createStream(state.transportMode)
         createNotificationChannel()
@@ -375,6 +376,8 @@ class StreamingService : Service(), ConnectChecker {
     fun currentState(): StreamState {
         return state
     }
+
+    fun ristDiagnosticReport(): String = RistDiagnostics.report(this, state)
 
     fun prepareAndAttachPreview(
         surfaceView: SurfaceView,
@@ -757,6 +760,9 @@ class StreamingService : Service(), ConnectChecker {
         endpoint: String,
     ): Boolean {
         val clean = endpoint.trim()
+        if (mode == TransportMode.RIST || mode == TransportMode.RIST_MULTIPATH) {
+            RistDiagnostics.append(this, "start requested | mode=$mode endpoint=$clean")
+        }
 
         /*
          * Use java.net.URI instead of the previous
@@ -893,6 +899,9 @@ class StreamingService : Service(), ConnectChecker {
             true
         } catch (error: Throwable) {
             Log.e(TAG, "${state.transportMode.label} start failed", error)
+            if (state.transportMode == TransportMode.RIST || state.transportMode == TransportMode.RIST_MULTIPATH) {
+                RistDiagnostics.append(this, "start failed | ${error.javaClass.simpleName}: ${error.message}")
+            }
 
             scheduleReconnect(
                 error.message
@@ -1118,6 +1127,9 @@ class StreamingService : Service(), ConnectChecker {
 
     override fun onConnectionSuccess() {
         Log.i(TAG, "${state.transportMode.label} connected")
+        if (state.transportMode == TransportMode.RIST || state.transportMode == TransportMode.RIST_MULTIPATH) {
+            RistDiagnostics.append(this, "connected | links=${state.ristLinksConnected}")
+        }
         if (state.transportMode != TransportMode.SRTLA) retryIndex = 0
         state = state.copy(isStreaming = true, isReconnecting = false)
         val connectedMessage = if (state.transportMode == TransportMode.BONDED_SRT) {
@@ -1154,6 +1166,9 @@ class StreamingService : Service(), ConnectChecker {
             }
 
         Log.e(TAG, "${state.transportMode.label} connection failed: $detail")
+        if (state.transportMode == TransportMode.RIST || state.transportMode == TransportMode.RIST_MULTIPATH) {
+            RistDiagnostics.append(this, "connection failed | $detail")
+        }
 
         state = state.copy(
             isStreaming = false,

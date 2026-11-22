@@ -2,6 +2,12 @@
 
 Append new entries at the top. Record the date, what changed, how it was checked, and any host-side actions separately from repository changes. Use plain language and avoid secrets.
 
+### 2026-11-22 — Persistent RIST diagnostic report
+- Added a bounded persistent app trace, bounded native libRIST trace, and an in-app Copy RIST Diagnostic button.
+- The report captures mode, endpoint, state, link count, startup failures, reconnect reasons, native creation failures, and libRIST warnings/errors. It survives app reopening and avoids credentials.
+- Static source checks and ZIP integrity checks passed. Android CI/device testing remains required.
+- Host-side actions: none.
+
 ## 2026-11-21 — SRTLA sender and receiver integration
 
 - Added a distinct SRTLA app mode backed by the pinned Rust sender, with each available Wi-Fi/cellular UDP socket bound through Android's network handle. RootEncoder sends SRT to the local proxy; the app reports active receiver links separately from the local encoder connection and reconnects if all links fail.
