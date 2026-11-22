@@ -78,6 +78,8 @@ def main():
     cargo_env["CARGO_TARGET_DIR"] = str(cargo_target)
     cargo_env["CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER"] = str(clang)
     cargo_env["CARGO_TARGET_AARCH64_LINUX_ANDROID_AR"] = str(archiver)
+    cargo_env["CC_aarch64_linux_android"] = str(clang)
+    cargo_env["AR_aarch64_linux_android"] = str(archiver)
     srtla_source = build_root / "srtla-send-source"
     if srtla_source.exists():
         shutil.rmtree(srtla_source)
