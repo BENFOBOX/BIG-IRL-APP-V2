@@ -27,10 +27,11 @@ typedef struct {
   pthread_mutex_t status_mutex;
 } RistSender;
 
-static void log_message(void *opaque, enum rist_log_level level, const char *message) {
+static int log_message(void *opaque, enum rist_log_level level, const char *message) {
   (void)opaque;
   int priority = level >= RIST_LOG_ERROR ? ANDROID_LOG_ERROR : ANDROID_LOG_WARN;
   __android_log_print(priority, TAG, "%s", message);
+  return 0;
 }
 
 static void connection_status(
