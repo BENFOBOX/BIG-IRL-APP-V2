@@ -1,0 +1,98 @@
+name: Apply RIST Diagnostic Patch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.ref_name == 'feature/srtla-rist-ab-test'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+
+      - name: Verify branch and patch ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test "$GITHUB_REF_NAME" = "feature/srtla-rist-ab-test"
+
+          test -f \
+            BIG-IRL-APP-V2-rist-diagnostic-files.zip
+
+          unzip -t \
+            BIG-IRL-APP-V2-rist-diagnostic-files.zip
+
+      - name: Apply patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf /tmp/rist-diagnostic-patch
+          mkdir -p /tmp/rist-diagnostic-patch
+
+          unzip -q \
+            BIG-IRL-APP-V2-rist-diagnostic-files.zip \
+            -d /tmp/rist-diagnostic-patch
+
+          python3 \
+            /tmp/rist-diagnostic-patch/apply_rist_diagnostic_patch.py
+
+          rm -f \
+            BIG-IRL-APP-V2-rist-diagnostic-files.zip
+
+      - name: Verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f \
+            app/src/main/java/uk/co/bigirl/sender/RistDiagnostics.kt
+
+          grep -F \
+            'COPY RIST DIAGNOSTIC' \
+            app/src/main/java/uk/co/bigirl/sender/MainActivity.kt
+
+          grep -F \
+            'external fun diagnosticNative()' \
+            app/src/main/java/uk/co/bigirl/sender/RistSender.kt
+
+          grep -F \
+            'Java_uk_co_bigirl_sender_RistNative_diagnosticNative' \
+            app/src/main/cpp/native_rist_sender.c
+
+          grep -F \
+            'fun ristDiagnosticReport()' \
+            app/src/main/java/uk/co/bigirl/sender/StreamingService.kt
+
+      - name: Commit and push
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config \
+            user.name \
+            "github-actions[bot]"
+
+          git config \
+            user.email \
+            "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo "No changes to commit."
+            exit 0
+          fi
+
+          git commit -m \
+            "Add persistent RIST diagnostics"
+
+          git push \
+            origin \
+            HEAD:feature/srtla-rist-ab-test
