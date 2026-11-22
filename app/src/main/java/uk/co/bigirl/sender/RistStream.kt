@@ -5,12 +5,12 @@ import android.net.ConnectivityManager
 import com.pedro.common.ConnectChecker
 
 internal class RistStream(
-    context: Context,
+    private val appContext: Context,
     connectChecker: ConnectChecker,
     private val networkHandles: () -> Pair<Long?, Long?>,
     private val multipath: Boolean,
     private val onLinkCountChanged: (Int) -> Unit,
-) : MpegTsStream(context, connectChecker) {
+) : MpegTsStream(appContext, connectChecker) {
 
     override fun createSender(endpoint: String): TransportPacketSender {
         val (wifiHandle, cellularHandle) = networkHandles()
@@ -18,7 +18,7 @@ internal class RistStream(
             val cell = cellularHandle
                 ?: throw IllegalStateException("Cellular network is unavailable")
             val activeNetworkHandle = (
-                context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             ).activeNetwork?.networkHandle
             if (activeNetworkHandle != cell) {
                 throw IllegalStateException(
