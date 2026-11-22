@@ -18,7 +18,9 @@ internal class RistSender(
             cellularNetworkHandle,
             this,
         )
-        check(nativeHandle != 0L) { "Could not start the native RIST sender" }
+        check(nativeHandle != 0L) {
+            RistNative.lastCreateErrorNative() ?: "Could not start the native RIST sender"
+        }
     }
 
     fun onLinkCountNative(connectedLinks: Int) {
@@ -53,6 +55,8 @@ private object RistNative {
         cellularNetworkHandle: Long,
         callback: RistSender,
     ): Long
+
+    external fun lastCreateErrorNative(): String?
 
     external fun sendNative(handle: Long, payload: ByteArray): Int
 

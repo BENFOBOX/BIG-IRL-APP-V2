@@ -14,6 +14,8 @@
 #define TAG "BIG_IRL_RIST"
 #define MAX_RIST_PATHS 2
 
+static _Thread_local char last_create_error[256];
+
 typedef struct {
   struct rist_ctx *context;
   struct rist_logging_settings *logging;
@@ -32,6 +34,10 @@ static int log_message(void *opaque, enum rist_log_level level, const char *mess
   int priority = level >= RIST_LOG_ERROR ? ANDROID_LOG_ERROR : ANDROID_LOG_WARN;
   __android_log_print(priority, TAG, "%s", message);
   return 0;
+}
+
+static void set_create_error(const char *message) {
+  snprintf(last_create_error, sizeof(last_create_error), "%s", message);
 }
 
 static void connection_status(
@@ -112,23 +118,37 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
     jlong cellular_network_handle,
     jobject callback) {
   (void)object;
-  if (endpoint == NULL || cellular_network_handle == 0) return 0;
+  last_create_error[0] = '\0';
+  if (endpoint == NULL) {
+    set_create_error("RIST endpoint is missing");
+    return 0;
+  }
+  if (cellular_network_handle == 0) {
+    set_create_error("Cellular network is unavailable for RIST");
+    return 0;
+  }
 
   const char *endpoint_text = (*env)->GetStringUTFChars(env, endpoint, NULL);
-  if (endpoint_text == NULL) return 0;
+  if (endpoint_text == NULL) {
+    set_create_error("Could not read RIST endpoint");
+    return 0;
+  }
 
   RistSender *sender = calloc(1, sizeof(*sender));
   if (sender == NULL) {
+    set_create_error("Could not allocate RIST sender");
     (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
     return 0;
   }
   if (pthread_mutex_init(&sender->status_mutex, NULL) != 0) {
+    set_create_error("Could not initialize RIST sender lock");
     free(sender);
     (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
     return 0;
   }
   sender->reported_link_count = -1;
   if ((*env)->GetJavaVM(env, &sender->jvm) != JNI_OK || callback == NULL) {
+    set_create_error("Could not initialize RIST callback");
     pthread_mutex_destroy(&sender->status_mutex);
     free(sender);
     (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
@@ -137,6 +157,7 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
   sender->callback = (*env)->NewGlobalRef(env, callback);
   jclass callback_class = (*env)->GetObjectClass(env, callback);
   if (sender->callback == NULL || callback_class == NULL) {
+    set_create_error("Could not retain RIST callback");
     if (callback_class != NULL) (*env)->DeleteLocalRef(env, callback_class);
     destroy_sender(sender);
     (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
@@ -146,6 +167,7 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
       env, callback_class, "onLinkCountNative", "(I)V");
   (*env)->DeleteLocalRef(env, callback_class);
   if (sender->callback_method == NULL) {
+    set_create_error("Could not find RIST callback method");
     destroy_sender(sender);
     (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
     return 0;
@@ -153,8 +175,17 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
 
   int result = rist_logging_set(
       &sender->logging, RIST_LOG_WARN, log_message, NULL, NULL, NULL);
-  if (result != 0 ||
-      rist_sender_create(&sender->context, RIST_PROFILE_MAIN, 0, sender->logging) != 0) {
+  if (result != 0) {
+    snprintf(last_create_error, sizeof(last_create_error),
+             "Could not initialize RIST logging (error %d)", result);
+    destroy_sender(sender);
+    (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
+    return 0;
+  }
+  result = rist_sender_create(&sender->context, RIST_PROFILE_MAIN, 0, sender->logging);
+  if (result != 0) {
+    snprintf(last_create_error, sizeof(last_create_error),
+             "Could not create RIST sender (error %d)", result);
     destroy_sender(sender);
     (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
     return 0;
@@ -164,6 +195,8 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
   result = rist_parse_address2(endpoint_text, &peer_config);
   (*env)->ReleaseStringUTFChars(env, endpoint, endpoint_text);
   if (result < 0 || peer_config == NULL) {
+    snprintf(last_create_error, sizeof(last_create_error),
+             "Invalid RIST destination (error %d)", result);
     if (peer_config != NULL) rist_peer_config_free2(&peer_config);
     destroy_sender(sender);
     return 0;
@@ -187,6 +220,8 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
     sender->peer_count = i + 1;
     if (rist_peer_create(
             sender->context, &sender->peers[i], &path_config) != 0) {
+      snprintf(last_create_error, sizeof(last_create_error),
+               "Could not create RIST network path %d", i + 1);
       rist_peer_config_free2(&peer_config);
       destroy_sender(sender);
       return 0;
@@ -198,6 +233,9 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
         android_setsocknetwork(networks[first_network + i], socket) != 0 ||
         (socket_extra >= 0 && socket_extra != socket &&
          android_setsocknetwork(networks[first_network + i], socket_extra) != 0)) {
+      snprintf(last_create_error, sizeof(last_create_error),
+               "Could not bind RIST path %d to Android network (errno %d)",
+               i + 1, errno);
       __android_log_print(
           ANDROID_LOG_ERROR,
           TAG,
@@ -213,14 +251,26 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
 
   if (rist_connection_status_callback_set(
           sender->context, connection_status, sender) != 0) {
+    set_create_error("Could not register RIST connection callback");
     destroy_sender(sender);
     return 0;
   }
   if (rist_start(sender->context) != 0) {
+    set_create_error("Could not start RIST transport");
     destroy_sender(sender);
     return 0;
   }
   return (jlong)(intptr_t)sender;
+}
+
+JNIEXPORT jstring JNICALL
+Java_uk_co_bigirl_sender_RistNative_lastCreateErrorNative(
+    JNIEnv *env,
+    jobject object) {
+  (void)object;
+  return last_create_error[0] == '\0'
+      ? NULL
+      : (*env)->NewStringUTF(env, last_create_error);
 }
 
 JNIEXPORT jint JNICALL
