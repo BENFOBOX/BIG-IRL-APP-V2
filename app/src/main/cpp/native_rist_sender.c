@@ -217,9 +217,9 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
 
   for (int i = 0; i < path_count; ++i) {
     struct rist_peer_config path_config = *peer_config;
-    // libRIST opens its UDP socket during peer creation, so bind the process
-    // briefly to make the new socket inherit this path's Android network.
-    if (android_setprocnetwork(networks[first_network + i]) != 0) {
+    const bool bind_process_network = path_count > 1;
+    if (bind_process_network &&
+        android_setprocnetwork(networks[first_network + i]) != 0) {
       snprintf(last_create_error, sizeof(last_create_error),
                "Could not select Android network for RIST path %d (errno %d)",
                i + 1, errno);
@@ -232,15 +232,17 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
     int peer_result = rist_peer_create(
         sender->context, &sender->peers[i], &path_config);
     int peer_error = errno;
-    int restore_result = android_setprocnetwork(0);
-    int restore_error = errno;
-    if (restore_result != 0) {
-      snprintf(last_create_error, sizeof(last_create_error),
-               "Could not restore Android process network (errno %d)",
-               restore_error);
-      rist_peer_config_free2(&peer_config);
-      destroy_sender(sender);
-      return 0;
+    if (bind_process_network) {
+      int restore_result = android_setprocnetwork(0);
+      int restore_error = errno;
+      if (restore_result != 0) {
+        snprintf(last_create_error, sizeof(last_create_error),
+                 "Could not restore Android process network (errno %d)",
+                 restore_error);
+        rist_peer_config_free2(&peer_config);
+        destroy_sender(sender);
+        return 0;
+      }
     }
     if (peer_result != 0) {
       snprintf(last_create_error, sizeof(last_create_error),

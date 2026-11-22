@@ -1,6 +1,7 @@
 package uk.co.bigirl.sender
 
 import android.content.Context
+import android.net.ConnectivityManager
 import com.pedro.common.ConnectChecker
 
 internal class RistStream(
@@ -16,6 +17,14 @@ internal class RistStream(
         if (!multipath) {
             val cell = cellularHandle
                 ?: throw IllegalStateException("Cellular network is unavailable")
+            val activeNetworkHandle = (
+                context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            ).activeNetwork?.networkHandle
+            if (activeNetworkHandle != cell) {
+                throw IllegalStateException(
+                    "Turn off Wi-Fi to stream single-path RIST over the SIM",
+                )
+            }
             return createRistSender(endpoint, null, cell)
         }
 
