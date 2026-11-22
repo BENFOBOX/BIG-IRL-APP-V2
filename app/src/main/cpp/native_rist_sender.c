@@ -217,31 +217,35 @@ Java_uk_co_bigirl_sender_RistNative_createNative(
 
   for (int i = 0; i < path_count; ++i) {
     struct rist_peer_config path_config = *peer_config;
-    sender->peer_count = i + 1;
-    if (rist_peer_create(
-            sender->context, &sender->peers[i], &path_config) != 0) {
+    // libRIST opens its UDP socket during peer creation, so bind the process
+    // briefly to make the new socket inherit this path's Android network.
+    if (android_setprocnetwork(networks[first_network + i]) != 0) {
       snprintf(last_create_error, sizeof(last_create_error),
-               "Could not create RIST network path %d", i + 1);
+               "Could not select Android network for RIST path %d (errno %d)",
+               i + 1, errno);
       rist_peer_config_free2(&peer_config);
       destroy_sender(sender);
       return 0;
     }
 
-    int socket = -1;
-    int socket_extra = -1;
-    if (rist_peer_get_socket(sender->peers[i], &socket, &socket_extra) != 0 ||
-        android_setsocknetwork(networks[first_network + i], socket) != 0 ||
-        (socket_extra >= 0 && socket_extra != socket &&
-         android_setsocknetwork(networks[first_network + i], socket_extra) != 0)) {
+    sender->peer_count = i + 1;
+    int peer_result = rist_peer_create(
+        sender->context, &sender->peers[i], &path_config);
+    int peer_error = errno;
+    int restore_result = android_setprocnetwork(0);
+    int restore_error = errno;
+    if (restore_result != 0) {
       snprintf(last_create_error, sizeof(last_create_error),
-               "Could not bind RIST path %d to Android network (errno %d)",
-               i + 1, errno);
-      __android_log_print(
-          ANDROID_LOG_ERROR,
-          TAG,
-          "Could not bind RIST path %d to Android network: errno=%d",
-          i,
-          errno);
+               "Could not restore Android process network (errno %d)",
+               restore_error);
+      rist_peer_config_free2(&peer_config);
+      destroy_sender(sender);
+      return 0;
+    }
+    if (peer_result != 0) {
+      snprintf(last_create_error, sizeof(last_create_error),
+               "Could not create RIST network path %d (error %d)",
+               i + 1, peer_error);
       rist_peer_config_free2(&peer_config);
       destroy_sender(sender);
       return 0;
