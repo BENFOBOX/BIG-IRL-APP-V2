@@ -67,14 +67,20 @@ internal class MpegTsMuxer(
 }
 
     fun sendAudio(data: ByteBuffer, info: MediaFrame.Info) = synchronized(lock) {
-        runBlocking {
-            audioPacket.createAndSendPacket(
-                MediaFrame(data.duplicate(), info, MediaFrame.Type.AUDIO),
-            ) { packets ->
-                sendPackets(packets)
-            }
+    runBlocking {
+        val copy = ByteBuffer.allocate(data.remaining())
+        val duplicate = data.duplicate()
+        copy.put(duplicate)
+        copy.flip()
+
+        audioPacket.createAndSendPacket(
+            MediaFrame(copy, info, MediaFrame.Type.AUDIO),
+        ) { packets ->
+            sendPackets(packets)
         }
     }
+}
+
 
     private fun sendPackets(packets: List<MpegTsPacket>) {
         if (packets.isEmpty()) return
