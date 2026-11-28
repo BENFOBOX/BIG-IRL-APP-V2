@@ -136,44 +136,85 @@ jobs:
 
               text = text.replace(old, new, 1)
 
-          # ----------------------------------------
-          # StreamBox button
-          # ----------------------------------------
+ # ----------------------------------------
+# StreamBox button
+# ----------------------------------------
 
-          if 'Text("STREAMBOX RECORDINGS")' not in text:
-              old = """        OutlinedButton(
-                  modifier = Modifier.fillMaxWidth(),
-                  onClick = { onControlsSideChange(!controlsOnLeft) },
-              ) {
-                  Text(if (controlsOnLeft) "Controls: LEFT" else "Controls: RIGHT")
-              }
-          """
+if 'Text("STREAMBOX RECORDINGS")' not in text:
+    control_panel_start = text.find(
+        "private fun ControlPanel("
+    )
 
-              new = old + """
-              val streamBoxContext = LocalContext.current
+    if control_panel_start == -1:
+        raise SystemExit(
+            "Could not find ControlPanel function"
+        )
 
-              Button(
-                  modifier = Modifier.fillMaxWidth(),
-                  onClick = {
-                      streamBoxContext.startActivity(
-                          Intent(
-                              streamBoxContext,
-                              StreamBoxActivity::class.java,
-                          )
-                      )
-                  },
-              ) {
-                  Text("STREAMBOX RECORDINGS")
-              }
-          """
+    next_composable = text.find(
+        "\n@Composable",
+        control_panel_start + 1,
+    )
 
-              if old not in text:
-                  raise SystemExit(
-                      "Could not find controls-side button"
-                  )
+    if next_composable == -1:
+        next_composable = len(text)
 
-              text = text.replace(old, new, 1)
+    control_panel = text[
+        control_panel_start:next_composable
+    ]
 
+    insertion_points = [
+        """        TransportSelector(
+""",
+        """        if (scrollable) {
+            ProfileSelector(
+""",
+        """        OutlinedTextField(
+""",
+    ]
+
+    chosen_marker = None
+
+    for marker in insertion_points:
+        if marker in control_panel:
+            chosen_marker = marker
+            break
+
+    if chosen_marker is None:
+        raise SystemExit(
+            "Could not find a safe insertion point "
+            "inside ControlPanel"
+        )
+
+    streambox_button = """        val streamBoxContext =
+            LocalContext.current
+
+        Button(
+            modifier = Modifier.fillMaxWidth(),
+            onClick = {
+                streamBoxContext.startActivity(
+                    Intent(
+                        streamBoxContext,
+                        StreamBoxActivity::class.java,
+                    )
+                )
+            },
+        ) {
+            Text("STREAMBOX RECORDINGS")
+        }
+
+"""
+
+    updated_control_panel = control_panel.replace(
+        chosen_marker,
+        streambox_button + chosen_marker,
+        1,
+    )
+
+    text = (
+        text[:control_panel_start]
+        + updated_control_panel
+        + text[next_composable:]
+    )
           main_file.write_text(text)
 
           # ----------------------------------------
