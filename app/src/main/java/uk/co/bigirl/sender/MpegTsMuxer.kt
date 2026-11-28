@@ -54,7 +54,7 @@ internal class MpegTsMuxer(
     fun sendVideo(data: ByteBuffer, info: MediaFrame.Info) = synchronized(lock) {
     runBlocking {
         val copy = ByteBuffer.allocate(data.remaining())
-        val duplicate = data.duplicate()
+        val duplicate = heapCopy(data)
         copy.put(duplicate)
         copy.flip()
 
@@ -69,7 +69,7 @@ internal class MpegTsMuxer(
     fun sendAudio(data: ByteBuffer, info: MediaFrame.Info) = synchronized(lock) {
     runBlocking {
         val copy = ByteBuffer.allocate(data.remaining())
-        val duplicate = data.duplicate()
+        val duplicate = heapCopy(data)
         copy.put(duplicate)
         copy.flip()
 
@@ -81,6 +81,20 @@ internal class MpegTsMuxer(
     }
 }
 
+
+    private fun heapCopy(
+        source: ByteBuffer,
+    ): ByteBuffer {
+        val duplicate = source.duplicate()
+        val copy = ByteBuffer.allocate(
+            duplicate.remaining()
+        )
+
+        copy.put(duplicate)
+        copy.flip()
+
+        return copy
+    }
 
     private fun sendPackets(packets: List<MpegTsPacket>) {
         if (packets.isEmpty()) return

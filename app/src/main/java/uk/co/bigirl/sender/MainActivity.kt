@@ -18,7 +18,11 @@ import android.app.PendingIntent
 import android.graphics.drawable.Icon
 import android.util.Rational
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
 import android.view.SurfaceHolder
+import java.net.HttpURLConnection
+import java.net.URL
 import android.view.SurfaceView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -142,9 +146,51 @@ class MainActivity : ComponentActivity() {
         bindService(intent, connection, Context.BIND_AUTO_CREATE)
     }
 
+    override fun onResume() {
+        super.onResume()
+        checkTailscaleReminder()
+    }
+
+    private fun checkTailscaleReminder() {
+        Thread {
+            val reachable = runCatching {
+                val connection = (
+                    URL(STREAMBOX_STATUS_URL)
+                        .openConnection()
+                    as HttpURLConnection
+                ).apply {
+                    connectTimeout = 1200
+                    readTimeout = 1200
+                    requestMethod = "GET"
+                }
+
+                try {
+                    connection.responseCode in 200..399
+                } finally {
+                    connection.disconnect()
+                }
+            }.getOrDefault(false)
+
+            if (!reachable) {
+                Handler(Looper.getMainLooper()).post {
+                    Toast.makeText(
+                        this,
+                        "StreamBox unavailable. Turn on Tailscale, then tap STREAMBOX.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                }
+            }
+        }.start()
+    }
+
     override fun onDestroy() {
         if (service != null) runCatching { unbindService(connection) }
         super.onDestroy()
+    }
+
+    private companion object {
+        const val STREAMBOX_STATUS_URL =
+            "http://100.68.249.56:8082/status"
     }
 }
 
@@ -632,6 +678,23 @@ private fun ControlPanel(
                 onProfileSelected = onProfileSelected,
             )
         }
+
+        val streamBoxContext =
+        LocalContext.current
+
+    Button(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = {
+            streamBoxContext.startActivity(
+                Intent(
+                    streamBoxContext,
+                    StreamBoxActivity::class.java,
+                )
+            )
+        },
+    ) {
+        Text("STREAMBOX RECORDINGS")
+    }
 
         TransportSelector(
             selectedTransport = selectedTransport,

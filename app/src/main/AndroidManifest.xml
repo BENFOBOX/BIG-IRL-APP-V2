@@ -21,6 +21,11 @@
         android:usesCleartextTraffic="true">
 
         <activity
+            android:name=".StreamBoxActivity"
+            android:exported="false"
+            android:screenOrientation="fullSensor" />
+
+        <activity
             android:name=".MainActivity"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden"
             android:exported="true"
