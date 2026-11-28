@@ -45,7 +45,7 @@ jobs:
           for file in required:
               if not file.exists():
                   raise SystemExit(
-                      "Missing required file: {}".format(file)
+                      f"Missing required file: {file}"
                   )
 
           # ----------------------------------------
@@ -62,6 +62,7 @@ jobs:
                       "import android.os.Handler\n"
                       "import android.os.Looper\n"
                   ),
+                  1,
               )
 
           if "import java.net.HttpURLConnection" not in text:
@@ -72,6 +73,41 @@ jobs:
                       "import java.net.HttpURLConnection\n"
                       "import java.net.URL\n"
                   ),
+                  1,
+              )
+
+          if "import android.content.Intent" not in text:
+              text = text.replace(
+                  "import android.content.Context\n",
+                  (
+                      "import android.content.Context\n"
+                      "import android.content.Intent\n"
+                  ),
+                  1,
+              )
+
+          if (
+              "import androidx.compose.ui.platform.LocalContext"
+              not in text
+          ):
+              compose_import_marker = (
+                  "import androidx.compose.ui.Modifier\n"
+              )
+
+              if compose_import_marker not in text:
+                  raise SystemExit(
+                      "Could not find Compose Modifier import "
+                      "in MainActivity"
+                  )
+
+              text = text.replace(
+                  compose_import_marker,
+                  (
+                      compose_import_marker
+                      + "import androidx.compose.ui.platform."
+                      + "LocalContext\n"
+                  ),
+                  1,
               )
 
           # ----------------------------------------
@@ -103,7 +139,11 @@ jobs:
                               requestMethod = "GET"
                           }
 
-                          connection.responseCode in 200..399
+                          try {
+                              connection.responseCode in 200..399
+                          } finally {
+                              connection.disconnect()
+                          }
                       }.getOrDefault(false)
 
                       if (!reachable) {
@@ -136,85 +176,86 @@ jobs:
 
               text = text.replace(old, new, 1)
 
- # ----------------------------------------
-# StreamBox button
-# ----------------------------------------
+          # ----------------------------------------
+          # StreamBox button
+          # ----------------------------------------
 
-if 'Text("STREAMBOX RECORDINGS")' not in text:
-    control_panel_start = text.find(
-        "private fun ControlPanel("
-    )
+          if 'Text("STREAMBOX RECORDINGS")' not in text:
+              control_panel_start = text.find(
+                  "private fun ControlPanel("
+              )
 
-    if control_panel_start == -1:
-        raise SystemExit(
-            "Could not find ControlPanel function"
-        )
+              if control_panel_start == -1:
+                  raise SystemExit(
+                      "Could not find ControlPanel function"
+                  )
 
-    next_composable = text.find(
-        "\n@Composable",
-        control_panel_start + 1,
-    )
+              next_composable = text.find(
+                  "\n@Composable",
+                  control_panel_start + 1,
+              )
 
-    if next_composable == -1:
-        next_composable = len(text)
+              if next_composable == -1:
+                  next_composable = len(text)
 
-    control_panel = text[
-        control_panel_start:next_composable
-    ]
+              control_panel = text[
+                  control_panel_start:next_composable
+              ]
 
-    insertion_points = [
-        """        TransportSelector(
-""",
-        """        if (scrollable) {
-            ProfileSelector(
-""",
-        """        OutlinedTextField(
-""",
-    ]
+              insertion_points = [
+                  """        TransportSelector(
+          """,
+                  """        if (scrollable) {
+                      ProfileSelector(
+          """,
+                  """        OutlinedTextField(
+          """,
+              ]
 
-    chosen_marker = None
+              chosen_marker = None
 
-    for marker in insertion_points:
-        if marker in control_panel:
-            chosen_marker = marker
-            break
+              for marker in insertion_points:
+                  if marker in control_panel:
+                      chosen_marker = marker
+                      break
 
-    if chosen_marker is None:
-        raise SystemExit(
-            "Could not find a safe insertion point "
-            "inside ControlPanel"
-        )
+              if chosen_marker is None:
+                  raise SystemExit(
+                      "Could not find a safe insertion point "
+                      "inside ControlPanel"
+                  )
 
-    streambox_button = """        val streamBoxContext =
-            LocalContext.current
+              streambox_button = """        val streamBoxContext =
+                  LocalContext.current
 
-        Button(
-            modifier = Modifier.fillMaxWidth(),
-            onClick = {
-                streamBoxContext.startActivity(
-                    Intent(
-                        streamBoxContext,
-                        StreamBoxActivity::class.java,
-                    )
-                )
-            },
-        ) {
-            Text("STREAMBOX RECORDINGS")
-        }
+              Button(
+                  modifier = Modifier.fillMaxWidth(),
+                  onClick = {
+                      streamBoxContext.startActivity(
+                          Intent(
+                              streamBoxContext,
+                              StreamBoxActivity::class.java,
+                          )
+                      )
+                  },
+              ) {
+                  Text("STREAMBOX RECORDINGS")
+              }
 
-"""
+          """
 
-    updated_control_panel = control_panel.replace(
-        chosen_marker,
-        streambox_button + chosen_marker,
-        1,
-    )
+              updated_control_panel = control_panel.replace(
+                  chosen_marker,
+                  streambox_button + chosen_marker,
+                  1,
+              )
 
-    text = (
-        text[:control_panel_start]
-        + updated_control_panel
-        + text[next_composable:]
-    )
+              text = (
+                  text[:control_panel_start]
+                  + updated_control_panel
+                  + text[next_composable:]
+              )
+
           main_file.write_text(text)
 
           # ----------------------------------------
@@ -289,7 +330,7 @@ if 'Text("STREAMBOX RECORDINGS")' not in text:
           # ----------------------------------------
 
           activity_file.write_text(
-          r'''package uk.co.bigirl.sender
+              r'''package uk.co.bigirl.sender
 
           import android.app.AlertDialog
           import android.content.Intent
@@ -341,21 +382,30 @@ if 'Text("STREAMBOX RECORDINGS")' not in text:
                           view: WebView,
                           request: WebResourceRequest,
                       ): Boolean {
+                          val scheme = request.url.scheme
+
                           if (
-                              request.url.host ==
-                              STREAMBOX_HOST
+                              scheme == "http" ||
+                              scheme == "https"
                           ) {
-                              return false
+                              if (
+                                  request.url.host ==
+                                  STREAMBOX_HOST
+                              ) {
+                                  return false
+                              }
+
+                              startActivity(
+                                  Intent(
+                                      Intent.ACTION_VIEW,
+                                      request.url,
+                                  )
+                              )
+
+                              return true
                           }
 
-                          startActivity(
-                              Intent(
-                                  Intent.ACTION_VIEW,
-                                  request.url,
-                              )
-                          )
-
-                          return true
+                          return false
                       }
 
                       override fun onReceivedHttpAuthRequest(
@@ -559,6 +609,8 @@ if 'Text("STREAMBOX RECORDINGS")' not in text:
 
               override fun onDestroy() {
                   if (::webView.isInitialized) {
+                      webView.stopLoading()
+                      webView.webViewClient = WebViewClient()
                       webView.destroy()
                   }
 
@@ -586,18 +638,16 @@ if 'Text("STREAMBOX RECORDINGS")' not in text:
               'android:name=".StreamBoxActivity"'
               not in text
           ):
-              marker = """
-              <activity
-                  android:name=".MainActivity\""""
+              marker = """        <activity
+                      android:name=".MainActivity\""""
 
-              addition = """
-              <activity
-                  android:name=".StreamBoxActivity"
-                  android:exported="false"
-                  android:screenOrientation="fullSensor" />
+              addition = """        <activity
+                      android:name=".StreamBoxActivity"
+                      android:exported="false"
+                      android:screenOrientation="fullSensor" />
 
-              <activity
-                  android:name=".MainActivity\""""
+                  <activity
+                      android:name=".MainActivity\""""
 
               if marker not in text:
                   raise SystemExit(
