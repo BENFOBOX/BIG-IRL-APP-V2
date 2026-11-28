@@ -1,0 +1,346 @@
+name: Apply Embedded StreamBox Patch
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v4
+
+      - name: Apply StreamBox WebView, Tailscale reminder, and RIST buffer fix
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          root = Path('.')
+          package = root / 'app/src/main/java/uk/co/bigirl/sender'
+          main = package / 'MainActivity.kt'
+          muxer = package / 'MpegTsMuxer.kt'
+          activity = package / 'StreamBoxActivity.kt'
+          manifest = root / 'app/src/main/AndroidManifest.xml'
+
+          for required in (main, muxer, manifest):
+              if not required.is_file():
+                  raise SystemExit(f'FAIL: missing required file: {required}')
+
+          # MainActivity imports and one-time foreground reminder.
+          text = main.read_text()
+          if 'import android.os.Handler' not in text:
+              text = text.replace(
+                  'import android.os.IBinder\n',
+                  'import android.os.IBinder\nimport android.os.Handler\nimport android.os.Looper\n',
+              )
+          if 'import java.net.HttpURLConnection' not in text:
+              text = text.replace(
+                  'import android.view.SurfaceHolder\n',
+                  'import android.view.SurfaceHolder\nimport java.net.HttpURLConnection\nimport java.net.URL\n',
+              )
+
+          if 'private fun checkTailscaleReminder()' not in text:
+              old = '''    override fun onDestroy() {
+                  if (service != null) runCatching { unbindService(connection) }
+                  super.onDestroy()
+              }
+          '''
+              new = '''    override fun onResume() {
+                  super.onResume()
+                  checkTailscaleReminder()
+              }
+
+              private fun checkTailscaleReminder() {
+                  Thread {
+                      val reachable = runCatching {
+                          val connection = (URL(STREAMBOX_TAILSCALE_STATUS).openConnection() as HttpURLConnection).apply {
+                              connectTimeout = 1200
+                              readTimeout = 1200
+                              requestMethod = "GET"
+                          }
+                          connection.responseCode in 200..399
+                      }.getOrDefault(false)
+
+                      if (!reachable) {
+                          Handler(Looper.getMainLooper()).post {
+                              Toast.makeText(
+                                  this,
+                                  "StreamBox monitoring unavailable. Turn on Tailscale, then tap STREAMBOX.",
+                                  Toast.LENGTH_LONG,
+                              ).show()
+                          }
+                      }
+                  }.start()
+              }
+
+              override fun onDestroy() {
+                  if (service != null) runCatching { unbindService(connection) }
+                  super.onDestroy()
+              }
+
+              private companion object {
+                  const val STREAMBOX_TAILSCALE_STATUS = "http://100.68.249.56:8082/status"
+              }
+          '''
+              if old not in text:
+                  raise SystemExit('FAIL: MainActivity onDestroy block not found')
+              text = text.replace(old, new, 1)
+
+          if 'Text("STREAMBOX RECORDINGS")' not in text:
+              old = '''        OutlinedButton(
+                  modifier = Modifier.fillMaxWidth(),
+                  onClick = { onControlsSideChange(!controlsOnLeft) },
+              ) {
+                  Text(if (controlsOnLeft) "Controls: LEFT" else "Controls: RIGHT")
+              }
+          '''
+              new = old + '''
+              val context = LocalContext.current
+              Button(
+                  modifier = Modifier.fillMaxWidth(),
+                  onClick = { context.startActivity(Intent(context, StreamBoxActivity::class.java)) },
+              ) {
+                  Text("STREAMBOX RECORDINGS")
+              }
+          '''
+              if old not in text:
+                  raise SystemExit('FAIL: controls-side button block not found')
+              text = text.replace(old, new, 1)
+
+          main.write_text(text)
+
+          # Convert MediaCodec direct buffers to heap buffers before Pedro's NAL reader.
+          text = muxer.read_text()
+          text = text.replace(
+              'MediaFrame(data.duplicate(), info, MediaFrame.Type.VIDEO)',
+              'MediaFrame(heapCopy(data), info, MediaFrame.Type.VIDEO)',
+          )
+          text = text.replace(
+              'MediaFrame(data.duplicate(), info, MediaFrame.Type.AUDIO)',
+              'MediaFrame(heapCopy(data), info, MediaFrame.Type.AUDIO)',
+          )
+          if 'private fun heapCopy(source: ByteBuffer)' not in text:
+              marker = '\n    private fun sendPackets(packets: List<MpegTsPacket>) {'
+              helper = '''
+              private fun heapCopy(source: ByteBuffer): ByteBuffer {
+                  val duplicate = source.duplicate()
+                  val copy = ByteBuffer.allocate(duplicate.remaining())
+                  copy.put(duplicate)
+                  copy.flip()
+                  return copy
+              }
+          '''
+              if marker not in text:
+                  raise SystemExit('FAIL: MpegTsMuxer sendPackets marker not found')
+              text = text.replace(marker, helper + marker, 1)
+          muxer.write_text(text)
+
+          activity.write_text(r'''package uk.co.bigirl.sender
+
+          import android.app.AlertDialog
+          import android.content.Intent
+          import android.graphics.Color
+          import android.net.Uri
+          import android.os.Bundle
+          import android.webkit.HttpAuthHandler
+          import android.webkit.WebResourceError
+          import android.webkit.WebResourceRequest
+          import android.webkit.WebView
+          import android.webkit.WebViewClient
+          import android.widget.EditText
+          import android.widget.LinearLayout
+          import android.widget.Toast
+          import androidx.activity.ComponentActivity
+
+          class StreamBoxActivity : ComponentActivity() {
+              private lateinit var webView: WebView
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  title = "StreamBox"
+                  webView = WebView(this).apply {
+                      setBackgroundColor(Color.BLACK)
+                      settings.javaScriptEnabled = true
+                      settings.domStorageEnabled = true
+                      settings.mediaPlaybackRequiresUserGesture = true
+                      settings.allowFileAccess = false
+                      settings.allowContentAccess = false
+                      webViewClient = streamBoxClient()
+                  }
+                  setContentView(webView)
+                  webView.loadUrl(STREAMBOX_URL)
+              }
+
+              private fun streamBoxClient() = object : WebViewClient() {
+                  override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                      return if (request.url.host == STREAMBOX_HOST) false else {
+                          startActivity(Intent(Intent.ACTION_VIEW, request.url))
+                          true
+                      }
+                  }
+
+                  override fun onReceivedHttpAuthRequest(
+                      view: WebView,
+                      handler: HttpAuthHandler,
+                      host: String,
+                      realm: String,
+                  ) = showLogin(handler)
+
+                  override fun onReceivedError(
+                      view: WebView,
+                      request: WebResourceRequest,
+                      error: WebResourceError,
+                  ) {
+                      if (request.isForMainFrame) showOfflinePage()
+                  }
+              }
+
+              private fun showLogin(handler: HttpAuthHandler) {
+                  val username = EditText(this).apply { hint = "Username" }
+                  val password = EditText(this).apply {
+                      hint = "Password"
+                      inputType = 0x00000081
+                  }
+                  val form = LinearLayout(this).apply {
+                      orientation = LinearLayout.VERTICAL
+                      val pad = (20 * resources.displayMetrics.density).toInt()
+                      setPadding(pad, pad / 2, pad, 0)
+                      addView(username)
+                      addView(password)
+                  }
+                  AlertDialog.Builder(this)
+                      .setTitle("StreamBox sign in")
+                      .setMessage("Use the same details as the recordings website.")
+                      .setView(form)
+                      .setPositiveButton("SIGN IN") { _, _ ->
+                          handler.proceed(username.text.toString(), password.text.toString())
+                      }
+                      .setNegativeButton("CANCEL") { _, _ -> handler.cancel() }
+                      .setOnCancelListener { handler.cancel() }
+                      .show()
+              }
+
+              private fun showOfflinePage() {
+                  val html = """
+                      <html><body style='background:#071019;color:white;font-family:sans-serif;padding:24px'>
+                      <h2>StreamBox unavailable</h2>
+                      <p>Turn on Tailscale on this phone, then retry.</p>
+                      <button style='padding:14px;margin:6px' onclick="location.href='retry:'">RETRY</button>
+                      <button style='padding:14px;margin:6px' onclick="location.href='tailscale:'">OPEN TAILSCALE</button>
+                      <button style='padding:14px;margin:6px' onclick="location.href='browser:'">OPEN IN BROWSER</button>
+                      </body></html>
+                  """.trimIndent()
+                  webView.webViewClient = object : WebViewClient() {
+                      override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+                          when (request.url.scheme) {
+                              "retry" -> {
+                                  webView.webViewClient = streamBoxClient()
+                                  webView.loadUrl(STREAMBOX_URL)
+                              }
+                              "tailscale" -> openTailscale()
+                              "browser" -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(STREAMBOX_URL)))
+                          }
+                          return true
+                      }
+                  }
+                  webView.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+              }
+
+              private fun openTailscale() {
+                  val launch = packageManager.getLaunchIntentForPackage("com.tailscale.ipn")
+                  if (launch != null) {
+                      startActivity(launch)
+                  } else {
+                      Toast.makeText(this, "Tailscale is not installed", Toast.LENGTH_LONG).show()
+                      startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(
+                          "https://play.google.com/store/apps/details?id=com.tailscale.ipn"
+                      )))
+                  }
+              }
+
+              @Deprecated("Deprecated in Java")
+              override fun onBackPressed() {
+                  if (::webView.isInitialized && webView.canGoBack()) webView.goBack()
+                  else super.onBackPressed()
+              }
+
+              override fun onDestroy() {
+                  if (::webView.isInitialized) webView.destroy()
+                  super.onDestroy()
+              }
+
+              private companion object {
+                  const val STREAMBOX_HOST = "100.68.249.56"
+                  const val STREAMBOX_URL = "http://100.68.249.56/recordings"
+              }
+          }
+          '''.replace('\n          ', '\n').lstrip())
+
+          text = manifest.read_text()
+          if 'android:name=".StreamBoxActivity"' not in text:
+              marker = '''
+              <activity
+                  android:name=".MainActivity"'''
+              addition = '''
+              <activity
+                  android:name=".StreamBoxActivity"
+                  android:exported="false"
+                  android:screenOrientation="fullSensor" />
+
+              <activity
+                  android:name=".MainActivity"'''
+              if marker not in text:
+                  raise SystemExit('FAIL: MainActivity manifest marker not found')
+              text = text.replace(marker, addition, 1)
+          manifest.write_text(text)
+
+          print('Patch applied successfully')
+          PY
+
+      - name: Verify patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'STREAMBOX RECORDINGS' app/src/main/java/uk/co/bigirl/sender/MainActivity.kt
+          grep -q 'class StreamBoxActivity' app/src/main/java/uk/co/bigirl/sender/StreamBoxActivity.kt
+          grep -q 'heapCopy(data)' app/src/main/java/uk/co/bigirl/sender/MpegTsMuxer.kt
+          grep -q 'android:name=".StreamBoxActivity"' app/src/main/AndroidManifest.xml
+          echo 'All patch checks passed.'
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+
+      - name: Compile Kotlin
+        run: gradle --no-daemon :app:compileDebugKotlin --stacktrace
+
+      - name: Commit and push patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add app/src/main/AndroidManifest.xml \
+                  app/src/main/java/uk/co/bigirl/sender/MainActivity.kt \
+                  app/src/main/java/uk/co/bigirl/sender/MpegTsMuxer.kt \
+                  app/src/main/java/uk/co/bigirl/sender/StreamBoxActivity.kt
+          if git diff --cached --quiet; then
+            echo 'Patch is already applied; nothing to commit.'
+            exit 0
+          fi
+          git commit -m 'Embed StreamBox monitoring and Tailscale reminder'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
